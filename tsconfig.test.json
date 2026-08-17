@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "commonjs",
+    "moduleResolution": "node10",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": ".test-build",
+    "rootDir": "."
+  },
+  // Only modules with no database or React dependency belong here — these are
+  // compiled to plain CommonJS and run under bare node.
+  "include": [
+    "src/lib/calling-hours.ts",
+    "src/lib/holidays.ts",
+    "src/lib/env.ts",
+    "src/lib/phone.ts",
+    "src/lib/timezones.ts",
+    "src/lib/db.ts",
+    "src/lib/leads.ts",
+    "src/lib/suppression.ts",
+    "src/lib/lead-finder/cost.ts",
+    "src/lib/lead-finder/hours.ts",
+    "src/lib/lead-finder/icp.ts",
+    "src/lib/lead-finder/queries.ts",
+    "src/lib/lead-finder/abn.ts",
+    "src/lib/lead-finder/places.ts",
+    "src/lib/lead-finder/source.ts",
+    "src/lib/lead-finder/runs.ts",
+    "src/lib/lead-finder/orchestrator.ts",
+    "scripts/**/*.ts"
+  ]
+}

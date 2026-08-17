@@ -1,0 +1,23 @@
+# Secrets — never commit these
+.env
+.env.local
+.env.*.local
+
+# Database (contains prospect names, phone numbers and transcripts)
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Build output
+.next/
+out/
+node_modules/
+next-env.d.ts
+.test-build/
+tsconfig.tsbuildinfo
+
+# OS junk
+.DS_Store
+Thumbs.db

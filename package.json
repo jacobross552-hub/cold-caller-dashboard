@@ -1,0 +1,30 @@
+{
+  "name": "cold-caller-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build --turbopack",
+    "start": "next start",
+    "test": "npm run test:hours && npm run test:leads && npm run test:import && npm run test:run",
+    "test:hours": "tsc -p tsconfig.test.json && node .test-build/scripts/test-calling-hours.js",
+    "test:leads": "tsc -p tsconfig.test.json && node .test-build/scripts/test-lead-finder.js",
+    "test:import": "tsc -p tsconfig.test.json && node .test-build/scripts/test-lead-import.js",
+    "test:run": "tsc -p tsconfig.test.json && node .test-build/scripts/test-lead-run.js",
+    "check:creds": "tsc -p tsconfig.test.json && node --env-file-if-exists=.env .test-build/scripts/check-credentials.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.72.0",
+    "@elevenlabs/elevenlabs-js": "^2.64.0",
+    "next": "^15.5.4",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@types/react": "^19.1.9",
+    "@types/react-dom": "^19.1.7",
+    "typescript": "^5.8.3"
+  }
+}

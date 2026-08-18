@@ -241,6 +241,34 @@ exactly what you'd want to know before walking into the demo.
 
 ---
 
+## How a lead can never be called twice, or after opting out
+
+The lead finder and the dialler are one system sharing one `leads` table, so
+there is a single place a lead can exist and a single place it can be
+suppressed.
+
+**Duplicates** are stopped at import, and every route in — the finder, CSV,
+paste, the JSON API — goes through the same function. A lead is rejected if
+its phone number already exists, or if its Google place id does (which catches
+the same business listed again under a new number).
+
+**Opt-outs** are checked in three overlapping places, on purpose:
+
+1. **At import** — a suppressed number can never get onto the leads table.
+2. **When a run is queued** — suppressed leads aren't selected.
+3. **Immediately before each batch is dialled** — because a run spans days
+   once the calling-hours guard pauses it overnight, and someone can opt out
+   between being queued and their turn coming round.
+
+Layers 2 and 3 aren't redundant: layer 1 only ever sees numbers suppressed
+*before* import. Adding a number to the do-not-contact list also marks any
+existing lead row `do_not_call`, so the two never disagree.
+
+Anyone who asks to be removed **on a call** is added to the permanent list
+automatically, so a later lead run can't source them back in.
+
+---
+
 ## Going live (Railway, about $5–10/month)
 
 Your PC works for testing, but calls that end while it's asleep are lost.
@@ -252,6 +280,20 @@ For real use it needs to be always-on.
 4. Add a Volume mounted at `/data`, and set `DATABASE_PATH=/data/dashboard.db`
    so your call history survives redeploys.
 5. Update the ElevenLabs webhook to the Railway address.
+
+Railway sets `PORT` itself and `npm start` respects it — no change needed.
+The database builds itself on first boot, so an empty volume is fine.
+
+---
+
+## If the dashboard suddenly returns errors on every page
+
+Almost always this: **`npm run build` was run while `npm run dev` was still
+running.** They both write to `.next`, and the dev server's manifest gets
+clobbered. The tunnel stays up, so from outside it looks fine while every
+request 500s — and a webhook arriving in that window is lost.
+
+Fix: stop both, `rm -rf .next`, start again.
 
 ---
 

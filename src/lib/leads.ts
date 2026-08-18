@@ -342,6 +342,18 @@ export function leadExists(phoneE164: string, placeId?: string): boolean {
   return false;
 }
 
+/**
+ * One lead, with everything the finder learned about it.
+ *
+ * Used by the call log and the pre-call briefing so the two halves of the
+ * system share a view of the business: the finder's listing data sits
+ * alongside what was actually said on the call.
+ */
+export function getLead(id: number | null | undefined): LeadRow | null {
+  if (id === null || id === undefined) return null;
+  return (db().prepare("SELECT * FROM leads WHERE id = ?").get(id) ?? null) as LeadRow | null;
+}
+
 export function listLeads(limit = 500): LeadRow[] {
   return db()
     .prepare("SELECT * FROM leads ORDER BY created_at DESC LIMIT ?")

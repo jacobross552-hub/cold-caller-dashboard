@@ -5,6 +5,8 @@ import { formatSydney } from "@/lib/calling-hours";
 import { formatAuPhone } from "@/lib/phone";
 import { OUTCOME_EXPLANATIONS, OUTCOME_LABELS, spokenTurns, type Outcome } from "@/lib/outcomes";
 import { Brief } from "@/components/Brief";
+import { LeadFacts } from "@/components/LeadFacts";
+import { getLead } from "@/lib/leads";
 
 export const dynamic = "force-dynamic";
 
@@ -59,6 +61,8 @@ export default async function CallDetailPage({ params }: { params: Promise<{ id:
           </div>
         )}
       </div>
+
+      <LeadFacts lead={getLead(call.lead_id)} />
 
       {brief ? (
         <div className="panel">

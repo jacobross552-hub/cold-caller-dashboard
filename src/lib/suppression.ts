@@ -50,10 +50,28 @@ export function suppress(
     .run(normalised.e164, reason, options.source ?? null, options.addedBy ?? null, Date.now());
 
   const added = Number(result.changes) > 0;
+
+  // Keep the lead row in step with the list.
+  //
+  // Without this the two halves of the system disagree: the number is on the
+  // do-not-contact list, but its lead row is still status='new', and the
+  // dispatcher selects on lead status. A number suppressed AFTER it was
+  // imported would still have been dialled. Belt to the dispatcher's braces.
+  const touched = db()
+    .prepare(
+      "UPDATE leads SET status = 'do_not_call' WHERE phone = ? AND status != 'do_not_call'",
+    )
+    .run(normalised.e164);
+
+  const leadsUpdated = Number(touched.changes);
+
   if (added) {
-    logEvent("suppression.added", `${normalised.e164} added to the do-not-contact list: ${reason}`, {
-      source: options.source,
-    });
+    logEvent(
+      "suppression.added",
+      `${normalised.e164} added to the do-not-contact list: ${reason}` +
+        (leadsUpdated ? ` (${leadsUpdated} lead row marked do-not-call)` : ""),
+      { source: options.source },
+    );
   }
 
   return {

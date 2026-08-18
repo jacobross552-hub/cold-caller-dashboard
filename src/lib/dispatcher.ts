@@ -109,10 +109,13 @@ export function startRun(count: number, name?: string): RunRow {
   }
 
   // Oldest leads first, never-called before previously-called.
+  // The NOT EXISTS is not redundant with lead status: a number can land on the
+  // do-not-contact list at any time, and that list is the authority.
   const leads = database
     .prepare(
       `SELECT id FROM leads
        WHERE status = 'new'
+         AND NOT EXISTS (SELECT 1 FROM do_not_contact d WHERE d.phone = leads.phone)
        ORDER BY call_count ASC, created_at ASC
        LIMIT ?`,
     )
@@ -341,10 +344,17 @@ export async function tick(): Promise<string> {
     // few in the queue.
     const candidates = database
       .prepare(
+        // THE LAST GATE BEFORE A CALL GOES OUT.
+        // A lead can be queued into a run and then opt out before its turn
+        // comes round — runs span hours or days once the calling-hours guard
+        // pauses them overnight. Re-checking here, rather than trusting the
+        // status captured at queue time, is what makes an opt-out take effect
+        // immediately instead of after the current run drains.
         `SELECT rl.id AS run_lead_id, l.id AS lead_id, l.phone, l.business_name, l.state
            FROM run_leads rl
            JOIN leads l ON l.id = rl.lead_id
           WHERE rl.run_id = ? AND rl.status = 'pending'
+            AND NOT EXISTS (SELECT 1 FROM do_not_contact d WHERE d.phone = l.phone)
           ORDER BY rl.id ASC
           LIMIT ?`,
       )

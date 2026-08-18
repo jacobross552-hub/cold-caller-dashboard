@@ -9,7 +9,11 @@ import { listBookedCalls, parseAnalysis } from "@/lib/calls";
 import { formatSydney } from "@/lib/calling-hours";
 import { formatAuPhone } from "@/lib/phone";
 import { featureStatus } from "@/lib/env";
+import { getLead } from "@/lib/leads";
+import { findBookedEvent } from "@/lib/calendar-event";
+import type { TranscriptTurn } from "@/lib/outcomes";
 import { Brief } from "@/components/Brief";
+import { LeadFacts } from "@/components/LeadFacts";
 
 export const dynamic = "force-dynamic";
 
@@ -43,6 +47,10 @@ export default async function MeetingsPage() {
         booked.map((call) => {
           const brief = parseAnalysis(call);
           const booking = brief?.analysis.booking;
+          const lead = getLead(call.lead_id);
+          const event = findBookedEvent(
+            call.transcript_json ? (JSON.parse(call.transcript_json) as TranscriptTurn[]) : [],
+          );
 
           return (
             <div className="panel" key={call.id}>
@@ -64,10 +72,39 @@ export default async function MeetingsPage() {
                 {call.started_at ? formatSydney(call.started_at) : "at an unknown time"}
               </p>
 
+              {event?.meetLink && (
+                <p style={{ margin: "0 0 12px" }}>
+                  <a
+                    href={event.meetLink}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    style={{ fontWeight: 600 }}
+                  >
+                    Join the Google Meet →
+                  </a>
+                  {event.eventLink && (
+                    <>
+                      {" · "}
+                      <a
+                        href={event.eventLink}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        className="small"
+                      >
+                        open in calendar
+                      </a>
+                    </>
+                  )}
+                </p>
+              )}
+
               {call.summary && <p>{call.summary}</p>}
 
               {brief ? (
-                <Brief brief={brief} compact />
+                <>
+                  <Brief brief={brief} compact />
+                  <LeadFacts lead={lead} inline />
+                </>
               ) : (
                 <p className="muted small">
                   No briefing generated for this call yet.{" "}

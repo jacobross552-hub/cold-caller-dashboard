@@ -18,6 +18,8 @@
     "src/lib/env.ts",
     "src/lib/phone.ts",
     "src/lib/timezones.ts",
+    "src/lib/calendar-event.ts",
+    "src/lib/outcomes.ts",
     "src/lib/db.ts",
     "src/lib/leads.ts",
     "src/lib/suppression.ts",

@@ -20,12 +20,27 @@ import { z } from "zod";
 import { config, required } from "./env";
 import { checkQuoteAgainstTable, type QuoteCheck } from "./pricing";
 import {
-  calendarToolWasCalled,
   spokenTurns,
   transcriptToText,
   type Outcome,
   type WebhookCallData,
 } from "./outcomes";
+import { findBookedEvent, type BookedEvent } from "./calendar-event";
+
+/**
+ * Tell the model what the calendar tool actually did, so it doesn't have to
+ * infer a booking from the conversation alone. A failed booking is stated as
+ * failed — the agent may well have told the prospect it was booked.
+ */
+function describeBooking(event: BookedEvent | null): string {
+  if (!event) return "no booking tool was called";
+  if (!event.created) return `booking tool FAILED (${event.error ?? "unknown error"}) — no event exists`;
+  return (
+    "event created successfully" +
+    (event.startsAt ? ` for ${event.startsAt}` : "") +
+    (event.meetLink ? ` with Meet link ${event.meetLink}` : "")
+  );
+}
 
 /**
  * The stages of the call, taken from the flow in system-prompt-v8.txt.
@@ -201,7 +216,7 @@ export async function analyseCall(
           `Business called: ${context.businessName ?? "unknown"}`,
           `Number: ${context.phone ?? "unknown"}`,
           `Call length: ${data.metadata?.call_duration_secs ?? "unknown"} seconds`,
-          `Calendar tool was invoked during the call: ${calendarToolWasCalled(data.transcript) ? "yes" : "no"}`,
+          `Calendar booking tool result: ${describeBooking(findBookedEvent(data.transcript))}`,
           "",
           "TRANSCRIPT",
           transcript || "(no speech was recorded on this call)",

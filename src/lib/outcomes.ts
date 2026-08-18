@@ -6,6 +6,8 @@
  * summary and the pre-call brief are layered on top separately.
  */
 
+import { findBookedEvent } from "./calendar-event";
+
 export type Outcome =
   | "voicemail"
   | "no_answer"
@@ -107,6 +109,18 @@ export function calendarToolWasCalled(transcript: TranscriptTurn[] | undefined):
   }
 
   return false;
+}
+
+/**
+ * Did a booking actually get CREATED — not merely attempted?
+ *
+ * Distinct from `calendarToolWasCalled` on purpose. A `create_event` call that
+ * comes back with `is_error: true` means no event exists, so the call must not
+ * be flagged as booked or it turns up on the meetings page with a briefing for
+ * a demo that was never in the diary.
+ */
+export function bookingWasCreated(transcript: TranscriptTurn[] | undefined): boolean {
+  return findBookedEvent(transcript)?.created === true;
 }
 
 export function classifyOutcome(data: WebhookCallData): Outcome {

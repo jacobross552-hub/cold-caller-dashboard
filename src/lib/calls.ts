@@ -12,6 +12,7 @@ import { formatSydney } from "./calling-hours";
 import { formatAuPhone } from "./phone";
 import { featureStatus } from "./env";
 import { sendAlertSms } from "./sms";
+import { buildBookingSms, findBookedEvent } from "./calendar-event";
 import { suppress } from "./suppression";
 import { checkQuoteAgainstTable, formatMoney, type QuoteCheck } from "./pricing";
 import {
@@ -21,8 +22,9 @@ import {
   type CallAnalysis,
 } from "./brief";
 import {
-  calendarToolWasCalled,
+  bookingWasCreated,
   classifyOutcome,
+  type TranscriptTurn,
   type Outcome,
   type WebhookCallData,
 } from "./outcomes";
@@ -113,7 +115,10 @@ export function recordCall(data: WebhookCallData): { callId: number; outcome: Ou
     ? data.metadata.start_time_unix_secs * 1000
     : Date.now();
 
-  const bookedByTool = calendarToolWasCalled(data.transcript) ? 1 : 0;
+  // Only a SUCCESSFUL create_event counts. An errored one means no event
+  // exists, so flagging it as booked would put a phantom demo on the
+  // meetings page.
+  const bookedByTool = bookingWasCreated(data.transcript) ? 1 : 0;
 
   database
     .prepare(
@@ -286,18 +291,28 @@ export async function alertOnBooking(callId: number): Promise<void> {
   const brief = parseAnalysis(call);
   const analysis = brief?.analysis;
 
-  const when = analysis?.booking.day
-    ? `${analysis.booking.day}${analysis.booking.time ? ` ${analysis.booking.time}` : ""}`
-    : "check your calendar for the time";
+  // The booked event carries the Google Meet link and the authoritative start
+  // time. Falls back to whatever the model read out of the transcript when no
+  // event was created, so this never throws on a link-less booking.
+  const event = findBookedEvent(
+    call.transcript_json ? (JSON.parse(call.transcript_json) as TranscriptTurn[]) : [],
+  );
 
-  const figure = analysis?.discounted_weekly_loss
-    ? `They agreed to about ${formatMoney(analysis.discounted_weekly_loss)}/wk in missed calls. `
-    : "";
+  // Google's own start time beats the model's reading of the conversation.
+  const when = event?.startsAt
+    ? formatSydney(new Date(event.startsAt))
+    : analysis?.booking.day
+      ? `${analysis.booking.day}${analysis.booking.time ? ` ${analysis.booking.time}` : ""}`
+      : "check your calendar for the time";
 
-  const body =
-    `MEETING BOOKED: ${call.business_name ?? call.phone ?? "Unknown business"} — ${when}. ` +
-    figure +
-    `Full brief in the dashboard.`;
+  const body = buildBookingSms({
+    business: call.business_name ?? call.phone ?? "Unknown business",
+    when,
+    figureLine: analysis?.discounted_weekly_loss
+      ? `They agreed to about ${formatMoney(analysis.discounted_weekly_loss)}/wk in missed calls.`
+      : undefined,
+    event,
+  });
 
   const result = await sendAlertSms(body);
   if (result.sent) {

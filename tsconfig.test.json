@@ -1,7 +1,9 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022"],
+    // DOM is here only for the fetch/RequestInit types the calling modules use.
+    // Nothing in the test build touches a browser API.
+    "lib": ["ES2022", "DOM"],
     "module": "commonjs",
     "moduleResolution": "node10",
     "strict": true,
@@ -20,6 +22,12 @@
     "src/lib/timezones.ts",
     "src/lib/calendar-event.ts",
     "src/lib/outcomes.ts",
+    "src/lib/pricing.ts",
+    "src/lib/elevenlabs.ts",
+    "src/lib/sms.ts",
+    "src/lib/brief.ts",
+    "src/lib/calls.ts",
+    "src/lib/dispatcher.ts",
     "src/lib/db.ts",
     "src/lib/leads.ts",
     "src/lib/suppression.ts",

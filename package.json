@@ -6,13 +6,14 @@
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
     "start": "next start",
-    "test": "npm run test:hours && npm run test:leads && npm run test:import && npm run test:run && npm run test:calendar",
+    "test": "npm run test:hours && npm run test:leads && npm run test:import && npm run test:run && npm run test:calendar && npm run test:integration",
     "test:hours": "tsc -p tsconfig.test.json && node .test-build/scripts/test-calling-hours.js",
     "test:leads": "tsc -p tsconfig.test.json && node .test-build/scripts/test-lead-finder.js",
     "test:import": "tsc -p tsconfig.test.json && node .test-build/scripts/test-lead-import.js",
     "test:run": "tsc -p tsconfig.test.json && node .test-build/scripts/test-lead-run.js",
     "check:creds": "tsc -p tsconfig.test.json && node --env-file-if-exists=.env .test-build/scripts/check-credentials.js",
-    "test:calendar": "tsc -p tsconfig.test.json && node .test-build/scripts/test-calendar-event.js"
+    "test:calendar": "tsc -p tsconfig.test.json && node .test-build/scripts/test-calendar-event.js",
+    "test:integration": "tsc -p tsconfig.test.json && node .test-build/scripts/test-integration.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.72.0",

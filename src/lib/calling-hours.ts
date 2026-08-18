@@ -138,8 +138,6 @@ export function zoneClock(at: Date = new Date(), timeZone: string = DEFAULT_TIME
   };
 }
 
-/** Backwards-compatible alias — the Sydney clock is the default zone. */
-export const sydneyClock = (at: Date = new Date()) => zoneClock(at, DEFAULT_TIME_ZONE);
 
 /**
  * Convert a local wall-clock time in a zone into the matching UTC instant.
@@ -299,18 +297,6 @@ export function checkCallingWindowForState(
   at: Date = new Date(),
 ): WindowCheck {
   return checkCallingWindow(at, timeZoneForState(state));
-}
-
-/** Throws unless a call may be dispatched right now. */
-export function assertCanDialNow(
-  at: Date = new Date(),
-  timeZone: string = DEFAULT_TIME_ZONE,
-): WindowCheck {
-  const check = checkCallingWindow(at, timeZone);
-  if (!check.allowed) {
-    throw new Error(`Calling-hours guard: ${check.reason}`);
-  }
-  return check;
 }
 
 /** True if the public-holiday table is about to run out of dates. */

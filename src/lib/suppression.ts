@@ -6,12 +6,20 @@
  * into a finding. So an opt-out here is permanent and lives independently of
  * the lead row it came from.
  *
- * Two rules that make it actually durable:
- *   1. Checked at IMPORT time, not just at call time. A suppressed number can
- *      never come back onto the list via a lead run, so it can never be dialled
- *      by a future run that forgot to check.
- *   2. Never deleted by the app. `leads` rows come and go; this table only
- *      grows.
+ * Checked in three places, deliberately overlapping:
+ *   1. At IMPORT — a suppressed number can never get back onto the leads
+ *      table via a lead run, paste, CSV or the API.
+ *   2. When a run is QUEUED — leads already on the list are not selected.
+ *   3. Immediately before each chunk is DIALLED — because a run spans days
+ *      once the calling-hours guard pauses it overnight, and someone can opt
+ *      out between being queued and their turn coming round.
+ *
+ * Layers 2 and 3 are not redundant with layer 1: layer 1 only sees numbers
+ * suppressed BEFORE import. `suppress()` also marks any matching lead row
+ * do_not_call so the two representations never disagree.
+ *
+ * And: never deleted by the app. `leads` rows come and go; this table only
+ * grows, except through the deliberate `unsuppress` below.
  *
  * Everything is keyed on E.164 so "0412 345 678" and "+61412345678" are the
  * same number.
@@ -87,23 +95,6 @@ export function isSuppressed(phone: string): boolean {
   return Boolean(
     db().prepare("SELECT 1 FROM do_not_contact WHERE phone = ?").get(normalised.e164),
   );
-}
-
-/**
- * Bulk check, for import runs that would otherwise do one query per candidate.
- * Returns the set of E.164 numbers from `phones` that are suppressed.
- */
-export function suppressedAmong(phones: string[]): Set<string> {
-  const found = new Set<string>();
-  if (phones.length === 0) return found;
-
-  const statement = db().prepare("SELECT phone FROM do_not_contact WHERE phone = ?");
-  for (const phone of phones) {
-    const normalised = normaliseAuPhone(phone);
-    if (!normalised.ok || !normalised.e164) continue;
-    if (statement.get(normalised.e164)) found.add(normalised.e164);
-  }
-  return found;
 }
 
 /**

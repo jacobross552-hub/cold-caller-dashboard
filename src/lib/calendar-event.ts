@@ -132,7 +132,7 @@ export function findBookedEvent(transcript: TranscriptTurn[] | undefined): Booke
  * Format the Meet link for an SMS. Google Meet links are short enough to sit
  * inside a single 160-character segment alongside the rest of the message.
  */
-export function meetLinkLine(event: BookedEvent | null): string {
+function meetLinkLine(event: BookedEvent | null): string {
   return event?.meetLink ? ` Join: ${event.meetLink}` : "";
 }
 

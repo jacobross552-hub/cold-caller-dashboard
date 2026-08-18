@@ -103,19 +103,3 @@ export async function cancelBatch(batchId: string): Promise<void> {
     method: "POST",
   });
 }
-
-/** Sanity check used by the settings page — confirms the key and agent exist. */
-export async function checkAgent(): Promise<{ ok: boolean; detail: string }> {
-  try {
-    const agentId = required("ELEVENLABS_AGENT_ID");
-    const agent = await call<{ name?: string; agent_id?: string }>(
-      `/convai/agents/${encodeURIComponent(agentId)}`,
-    );
-    return {
-      ok: true,
-      detail: `Connected to agent "${agent.name ?? agentId}".`,
-    };
-  } catch (err) {
-    return { ok: false, detail: err instanceof Error ? err.message : String(err) };
-  }
-}

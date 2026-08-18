@@ -17,6 +17,7 @@ import {
 } from "@/lib/lead-finder/orchestrator";
 import { parseLocations } from "@/lib/lead-finder/queries";
 import { placesConfigured } from "@/lib/lead-finder/places";
+import { appUrl } from "@/lib/http";
 
 export const runtime = "nodejs";
 
@@ -24,7 +25,7 @@ export async function POST(request: Request) {
   const form = await request.formData();
 
   const back = (params: Record<string, string>) => {
-    const url = new URL("/find-leads", request.url);
+    const url = appUrl(request, "/find-leads");
     for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
     return NextResponse.redirect(url, { status: 303 });
   };

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { cancelLeadRun, LeadRunError } from "@/lib/lead-finder/orchestrator";
+import { appUrl } from "@/lib/http";
 
 export const runtime = "nodejs";
 
@@ -8,7 +9,7 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const url = new URL("/find-leads", request.url);
+  const url = appUrl(request, "/find-leads");
 
   try {
     cancelLeadRun(Number(id));

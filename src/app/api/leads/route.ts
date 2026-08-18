@@ -11,6 +11,7 @@
 
 import { NextResponse } from "next/server";
 import { importLeads, leadsFromCsv, leadsFromPaste, type IncomingLead } from "@/lib/leads";
+import { appUrl } from "@/lib/http";
 
 export const runtime = "nodejs";
 
@@ -70,7 +71,7 @@ function redirectBack(
     rejected: Array<{ line: string; reason: string }>;
   },
 ) {
-  const url = new URL("/leads", request.url);
+  const url = appUrl(request, "/leads");
   url.searchParams.set("imported", String(result.imported));
   url.searchParams.set("duplicates", String(result.duplicates));
   if (result.suppressed) url.searchParams.set("suppressed", String(result.suppressed));

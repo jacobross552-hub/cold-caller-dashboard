@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { COOKIE_NAME, SESSION_DAYS, createSessionToken, passwordMatches } from "@/lib/auth";
 import { optional } from "@/lib/env";
+import { appUrl, isSecureRequest } from "@/lib/http";
 
 export const runtime = "nodejs";
 
@@ -19,7 +20,7 @@ export async function POST(request: Request) {
   const submitted = String(form.get("password") ?? "");
 
   if (!(await passwordMatches(submitted, expected))) {
-    const url = new URL("/login", request.url);
+    const url = appUrl(request, "/login");
     url.searchParams.set("error", "1");
     return NextResponse.redirect(url, { status: 303 });
   }
@@ -28,11 +29,11 @@ export async function POST(request: Request) {
   // Only ever redirect within this app.
   const target = next.startsWith("/") && !next.startsWith("//") ? next : "/";
 
-  const response = NextResponse.redirect(new URL(target, request.url), { status: 303 });
+  const response = NextResponse.redirect(appUrl(request, target), { status: 303 });
   response.cookies.set(COOKIE_NAME, await createSessionToken(secret), {
     httpOnly: true,
     sameSite: "lax",
-    secure: request.url.startsWith("https://"),
+    secure: isSecureRequest(request),
     path: "/",
     maxAge: SESSION_DAYS * 24 * 60 * 60,
   });

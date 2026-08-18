@@ -7,12 +7,13 @@
 
 import { NextResponse } from "next/server";
 import { tick } from "@/lib/dispatcher";
+import { appUrl } from "@/lib/http";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
   const result = await tick();
-  const url = new URL("/", request.url);
+  const url = appUrl(request, "/");
   url.searchParams.set("tick", result);
   return NextResponse.redirect(url, { status: 303 });
 }

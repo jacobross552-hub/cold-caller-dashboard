@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { RunError, startRun, tick } from "@/lib/dispatcher";
+import { appUrl } from "@/lib/http";
 
 export const runtime = "nodejs";
 
@@ -16,12 +17,12 @@ export async function POST(request: Request) {
     // records the hold — it never bypasses the guard.
     void tick().catch(() => {});
 
-    const url = new URL("/", request.url);
+    const url = appUrl(request, "/");
     url.searchParams.set("started", String(run.id));
     return NextResponse.redirect(url, { status: 303 });
   } catch (err) {
     const message = err instanceof RunError ? err.message : "Couldn't start the run.";
-    const url = new URL("/", request.url);
+    const url = appUrl(request, "/");
     url.searchParams.set("error", message);
     return NextResponse.redirect(url, { status: 303 });
   }

@@ -5,6 +5,7 @@
 
 import { NextResponse } from "next/server";
 import { analyseAndStore } from "@/lib/calls";
+import { appUrl } from "@/lib/http";
 
 export const runtime = "nodejs";
 
@@ -17,5 +18,5 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
 
   await analyseAndStore(callId);
-  return NextResponse.redirect(new URL(`/calls/${callId}`, request.url), { status: 303 });
+  return NextResponse.redirect(appUrl(request, `/calls/${callId}`), { status: 303 });
 }

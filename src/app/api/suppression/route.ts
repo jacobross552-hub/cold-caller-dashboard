@@ -7,6 +7,7 @@
 
 import { NextResponse } from "next/server";
 import { suppress, unsuppress } from "@/lib/suppression";
+import { appUrl } from "@/lib/http";
 
 export const runtime = "nodejs";
 
@@ -15,7 +16,7 @@ export async function POST(request: Request) {
   const phone = String(form.get("phone") ?? "").trim();
   const action = String(form.get("action") ?? "add");
 
-  const url = new URL("/leads", request.url);
+  const url = appUrl(request, "/leads");
 
   if (!phone) {
     url.searchParams.set("dncError", "Enter a phone number.");

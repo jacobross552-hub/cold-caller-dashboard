@@ -392,6 +392,13 @@ export async function tick(): Promise<string> {
           lead_id: String(lead.lead_id),
           business_name: lead.business_name,
           run_id: String(run.id),
+          // The number we are dialling, so the agent's send_sms tool has a
+          // correct `To` without having to ask the prospect for it mid-call.
+          // Without this the model fills `To` from whatever number is in its
+          // context — which is the callback number in its own system prompt,
+          // i.e. our Twilio number, texting ourselves. Reference it in the
+          // tool config as {{prospect_phone}}.
+          prospect_phone: lead.phone,
         },
       },
     }));

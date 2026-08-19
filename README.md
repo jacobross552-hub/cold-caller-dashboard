@@ -9,6 +9,8 @@ Runs and monitors the Jacob cold-calling agent without going into ElevenLabs.
 - A call log with plain-English summaries and the full transcript
 - Booked meetings flagged, each with a pre-call briefing
 - A text to your mobile the moment a meeting books
+- **What it all costs** — lifetime spend broken down by source, with what's
+  measured, what's estimated from a rate you set, and what isn't counted yet
 
 ---
 
@@ -158,10 +160,12 @@ take one off if it was added by mistake.
 npm test
 ```
 
-Four suites: calling hours, lead scoring, the import guardrails, and a full
-lead run end-to-end against a fake source — that last one exercises pagination,
-dedup, suppression, the cost ledger and the cost cap with no API key and no
-spend. All of them use a throwaway database, never your real one.
+Seven suites: calling hours, lead scoring, the import guardrails, calendar
+bookings, cost accounting, a full lead run end-to-end against a fake source,
+and an integration pass across both halves of the system. The lead run
+exercises pagination, dedup, suppression, the cost ledger and the cost cap with
+no API key and no spend. All of them use a throwaway database, never your real
+one.
 
 ### Set-up
 
@@ -202,8 +206,18 @@ that runs every minute releases calls only when the window is open. So:
 - A run still going at 8pm stops and picks up where it left off next morning.
 - Every hold is written to the activity log with its reason.
 
-There's also a daily cap (`MAX_CALLS_PER_DAY`, default 20) matching the
-10–20 calls/day target in `plan.md`.
+There is also a daily cap (`MAX_CALLS_PER_DAY`, default **250**, raised from
+20 on 18 Aug 2026). It is a throughput and cost guard, not a legal one — no
+ACMA instrument caps calls per day. The number that matters at this volume is
+in `plan.md`'s risk table: carrier spam-flagging is "not a real problem under
+20 calls/day" but "becomes the dominant problem above ~200/day". If answer
+rates fall away on the Twilio number, look here first.
+
+At `DISPATCH_CHUNK_SIZE=5` the scheduler dials in chunks of five and waits for
+each batch to finish before starting the next, so 250 calls is a full day of
+steady dialling rather than a burst. Raise the chunk size if it is not keeping
+up. Note also that `MAX_LEADS_PER_RUN` is 200, so one lead run no longer fills
+a whole day at this cap.
 
 Run the tests on this any time:
 
@@ -310,8 +324,80 @@ Fix: stop both, `rm -rf .next`, start again.
 
 ## Cost
 
-The dashboard itself only adds the Claude cost for summarising calls — roughly
-a cent or two per real conversation, and nothing at all for voicemails and
-no-answers, which skip the model entirely. It defaults to Claude Opus 5; set
-`ANTHROPIC_MODEL=claude-sonnet-5` in `.env` if you'd rather trade a little
-quality for lower cost.
+The **Costs** tab shows what the whole system has cost since day one, broken
+down by where the money went, with per-call and per-meeting figures underneath.
+
+### Every figure says where it came from
+
+This is the part worth understanding, because the three kinds of number on that
+page are not equally trustworthy and the page never blends them silently:
+
+| Label | What it means |
+|---|---|
+| **Measured** | Summed from per-event figures the provider itself reported, one row per event, with the price that applied stored alongside. Auditable months later; unaffected by a later price change. |
+| **Rated** | The usage is real and recorded — texts actually sent, minutes actually talked — but the price is a rate from your `.env`, not a figure anyone billed you. |
+| **Configured** | A flat monthly subscription the dashboard cannot see. Whatever you typed in, times the months the system has been running. |
+
+Anything that can't be measured and hasn't been configured shows as **"not
+set"**, not as `$0`, and the lifetime total is labelled a floor rather than a
+total until you fill the gaps in. A missing number and a genuinely free line
+item are different things.
+
+### What's measured
+
+- **ElevenLabs** — split into voice/telephony and the agent's own LLM, both in
+  real dollars, straight from each call's post-call webhook.
+- **Google Places** — from the per-call ledger the lead finder already keeps,
+  at the exchange rate that applied on the day of the run.
+- **ABN Lookup** — free, but the call count is logged so it's auditable.
+- **Anthropic** — the dashboard's own spend on summaries and briefings, priced
+  from the tokens the API reported and frozen on the row.
+
+> **A trap worth knowing about.** The `cost` field on ElevenLabs' post-call
+> webhook is **credits, not money** — a 157-second call reports `2092`. The
+> real money is `cost_fiat`, and `charging` splits it into voice and LLM. The
+> dashboard was storing only the credits figure; summing that column as dollars
+> would have claimed thousands of dollars of spend on three test calls. Calls
+> recorded before this landed are re-priced automatically on first boot, out of
+> the webhook payload already stored on each row — nothing is fetched and
+> nothing is estimated.
+
+### What you have to tell it
+
+Four things the dashboard has no visibility into. Until they're set, they're
+excluded from the total and the page says so:
+
+| Variable | What it's for |
+|---|---|
+| `TWILIO_SMS_COST_USD` | Per SMS segment. |
+| `TWILIO_CALL_COST_USD_PER_MIN` | **Per outbound call minute — the big one.** |
+| `ELEVENLABS_PLAN_MONTHLY_AUD` | Your ElevenLabs plan fee. |
+| `RAILWAY_MONTHLY_AUD` | Hosting. |
+
+Read the two Twilio figures off your own console rather than a public rate
+card — AU pricing is account- and destination-specific.
+
+> **Twilio bills you twice over, and it's easy to miss.** ElevenLabs dials
+> through *your* Twilio number, so Twilio charges for the call minutes on top
+> of what ElevenLabs charges for the call. At 20 calls/day that's noise. At the
+> current cap of 250 it is not: roughly 650 minutes a day. That spend is
+> invisible to the dashboard until `TWILIO_CALL_COST_USD_PER_MIN` is set.
+
+There are also **two separate LLM bills**, which the page keeps as separate
+lines: the voice agent's own model is billed by ElevenLabs, while the
+dashboard's `ANTHROPIC_API_KEY` pays for something different — the call
+summaries and pre-call briefings. Roughly a cent or two per real conversation,
+and nothing at all for voicemails and no-answers, which skip the model
+entirely. It defaults to Claude Opus 5; set `ANTHROPIC_MODEL=claude-sonnet-5`
+in `.env` if you'd rather trade a little quality for lower cost.
+
+Anthropic's rates live in `src/lib/costs.ts` and nowhere else. If they change,
+change them there — rows already written keep the cost they were priced at.
+
+```bash
+npm run test:costs
+```
+
+41 cases, most of them about the honesty rules rather than the arithmetic:
+that credits are never read as money, that an unpriced line stays unpriced
+instead of becoming zero, and that a total which omits something says so.

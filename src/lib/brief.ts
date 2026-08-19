@@ -188,6 +188,18 @@ function anthropic(): Anthropic {
 export interface AnalysisResult {
   analysis: CallAnalysis;
   quoteCheck: QuoteCheck;
+  /**
+   * What this call to Anthropic actually consumed, straight off the response.
+   * Handed back so the caller can price it and write a cost ledger row — the
+   * dashboard's own model spend is otherwise invisible on the bill.
+   */
+  usage: {
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+  };
 }
 
 /**
@@ -237,6 +249,13 @@ export async function analyseCall(
       analysis.quoted_setup_fee,
       analysis.quoted_monthly_retainer,
     ),
+    usage: {
+      model: config.anthropicModel,
+      inputTokens: response.usage?.input_tokens ?? 0,
+      outputTokens: response.usage?.output_tokens ?? 0,
+      cacheReadTokens: response.usage?.cache_read_input_tokens ?? 0,
+      cacheWriteTokens: response.usage?.cache_creation_input_tokens ?? 0,
+    },
   };
 }
 

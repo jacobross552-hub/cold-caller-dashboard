@@ -9,6 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { config } from "./env";
+import { extractCallCost } from "./call-cost";
 
 let instance: DatabaseSync | null = null;
 
@@ -182,6 +183,60 @@ function migrate(database: DatabaseSync) {
      * survives as long as the lead row does, and can't hold a number that was
      * never a lead in the first place.
      */
+    /*
+     * COST LEDGERS.
+     *
+     * Two tables the dashboard writes itself, so lifetime spend can be summed
+     * from recorded events rather than estimated after the fact — the same
+     * principle as lead_api_calls above.
+     *
+     * ElevenLabs needs no table: its post-call webhook reports the real fiat
+     * cost of each call, so those figures live on calls (see the additive
+     * columns below).
+     */
+
+    /*
+     * One row per call to Anthropic made by THE DASHBOARD (call summaries and
+     * pre-call briefings). Nothing to do with the LLM inside the voice agent —
+     * ElevenLabs bills that separately and reports it as llm_price.
+     *
+     * Tokens are what the provider reports; cost_usd is priced from them at
+     * the rates in src/lib/costs.ts and frozen here, so a past run keeps its
+     * real cost after Anthropic changes prices.
+     */
+    CREATE TABLE IF NOT EXISTS ai_usage (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      call_id             INTEGER REFERENCES calls(id) ON DELETE SET NULL,
+      purpose             TEXT    NOT NULL,
+      model               TEXT    NOT NULL,
+      input_tokens        INTEGER NOT NULL DEFAULT 0,
+      output_tokens       INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens   INTEGER NOT NULL DEFAULT 0,
+      cache_write_tokens  INTEGER NOT NULL DEFAULT 0,
+      cost_usd            REAL    NOT NULL,
+      created_at          INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ai_usage_created ON ai_usage(created_at);
+
+    /*
+     * One row per SMS the dashboard sends. Twilio does not return a settled
+     * price at send time, so cost_usd is the configured rate, not a billed
+     * figure — the costs page labels it as such. The message SID is kept so
+     * the real prices can be reconciled from Twilio later if it ever matters.
+     */
+    CREATE TABLE IF NOT EXISTS sms_sends (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      call_id     INTEGER REFERENCES calls(id) ON DELETE SET NULL,
+      purpose     TEXT    NOT NULL,
+      provider_sid TEXT,
+      segments    INTEGER NOT NULL DEFAULT 1,
+      cost_usd    REAL    NOT NULL,
+      created_at  INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sms_sends_created ON sms_sends(created_at);
+
     CREATE TABLE IF NOT EXISTS do_not_contact (
       id       INTEGER PRIMARY KEY AUTOINCREMENT,
       phone    TEXT    NOT NULL UNIQUE,
@@ -209,6 +264,16 @@ function migrate(database: DatabaseSync) {
   addColumn(database, "leads", "opening_hours_json", "TEXT");
   addColumn(database, "leads", "source_record", "TEXT");
 
+  // --- Additive columns on `calls` -----------------------------------------
+  // The REAL money ElevenLabs charged for each call, split the way its own
+  // webhook splits it. The pre-existing `cost` column holds CREDITS, not
+  // dollars (a 157-second call came back as 2092), so it can never be summed
+  // into a spend figure — these three can. Backfillable from `raw_json` for
+  // calls recorded before this landed: `npm run backfill:costs`.
+  addColumn(database, "calls", "cost_fiat_usd", "REAL");
+  addColumn(database, "calls", "platform_price_usd", "REAL");
+  addColumn(database, "calls", "llm_price_usd", "REAL");
+
   // Google's place_id is the stable dedup key — the same business survives a
   // rename or a number change. Partial index so the many rows with no
   // place_id (pasted/CSV leads) don't collide with each other on NULL.
@@ -218,6 +283,7 @@ function migrate(database: DatabaseSync) {
   `);
 
   backfillDoNotContact(database);
+  backfillCallCosts(database);
 }
 
 /** Add a column only if it isn't there yet. SQLite has no ADD COLUMN IF NOT EXISTS. */
@@ -227,6 +293,64 @@ function addColumn(database: DatabaseSync, table: string, column: string, defini
   }>;
   if (columns.some((c) => c.name === column)) return;
   database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+/**
+ * Pull the real per-call cost out of payloads recorded before the cost columns
+ * existed.
+ *
+ * Nothing is fetched and nothing is estimated — the figures were always in the
+ * webhook body, stored verbatim in raw_json. The dashboard was reading
+ * metadata.cost (ElevenLabs CREDITS: 2092 for a 157-second call) and ignoring
+ * metadata.cost_fiat (the actual money).
+ *
+ * Runs once per boot and is a no-op after the first time, which is how it
+ * reaches the production database on Railway's volume without anyone having to
+ * run a script against a disk they cannot see from their laptop. Same shape as
+ * backfillDoNotContact below.
+ */
+function backfillCallCosts(database: DatabaseSync) {
+  const rows = database
+    .prepare(
+      `SELECT id, raw_json FROM calls WHERE cost_fiat_usd IS NULL AND raw_json IS NOT NULL`,
+    )
+    .all() as unknown as Array<{ id: number; raw_json: string }>;
+
+  if (rows.length === 0) return;
+
+  const update = database.prepare(
+    `UPDATE calls SET cost_fiat_usd = ?, platform_price_usd = ?, llm_price_usd = ? WHERE id = ?`,
+  );
+
+  let filled = 0;
+  for (const row of rows) {
+    let metadata: Record<string, unknown> | undefined;
+    try {
+      metadata = (JSON.parse(row.raw_json) as { metadata?: Record<string, unknown> }).metadata;
+    } catch {
+      continue; // Unparseable payload — leave the row alone rather than zero it.
+    }
+
+    const fiat = extractCallCost(metadata);
+    if (fiat.costFiatUsd === null) continue;
+
+    update.run(fiat.costFiatUsd, fiat.platformPriceUsd, fiat.llmPriceUsd, row.id);
+    filled++;
+  }
+
+  if (filled > 0) {
+    // Written against the handle directly, NOT via logEvent(): we are inside
+    // migrate(), which runs before db()'s instance is assigned, so logEvent
+    // would call db() again and recurse forever.
+    database
+      .prepare("INSERT INTO events (ts, kind, message, detail) VALUES (?, ?, ?, ?)")
+      .run(
+        Date.now(),
+        "costs.backfilled",
+        `Read the real cost of ${filled} past call${filled === 1 ? "" : "s"} out of its stored webhook payload.`,
+        null,
+      );
+  }
 }
 
 /**

@@ -157,6 +157,15 @@ brief.analyseCall = async () => {
       analysis.quoted_setup_fee,
       analysis.quoted_monthly_retainer,
     ),
+    // Fixed token counts, so the cost-ledger assertion below is exact rather
+    // than dependent on what a real model would have consumed.
+    usage: {
+      model: "claude-opus-5",
+      inputTokens: 20_000,
+      outputTokens: 2_000,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    },
   };
 };
 
@@ -268,7 +277,11 @@ function webhookPayload(options: {
       start_time_unix_secs: Math.floor(Date.now() / 1000) - 120,
       call_duration_secs: 118,
       termination_reason: "end_call_tool",
-      cost: 0,
+      // The real payload shape: `cost` is CREDITS, `cost_fiat` is money, and
+      // `charging` splits the money into voice and the agent's own LLM.
+      cost: 2092,
+      cost_fiat: 0.3786,
+      charging: { platform_price: 0.2071, llm_price: 0.1715 },
     },
     conversation_initiation_client_data: {
       dynamic_variables: {
@@ -428,12 +441,29 @@ async function main() {
   check("call linked back to its run", stored.run_id === run.id);
   check("business name carried through from the dispatch", stored.business_name === dialled.business_name);
   check("booking detected", stored.booked === 1);
+  check("credits stored as credits", stored.cost === 2092);
+  check("real money stored separately from credits", stored.cost_fiat_usd === 0.3786);
+  check("voice and agent-LLM costs split apart", stored.platform_price_usd === 0.2071 && stored.llm_price_usd === 0.1715);
 
   await calls.analyseAndStore(callId);
   const analysed = calls.getCall(callId)!;
 
   check("summary stored", Boolean(analysed.summary), analysed.analysis_error ?? "");
   check("briefing stored", Boolean(analysed.analysis_json));
+
+  // The dashboard's own Anthropic spend is invisible on any bill unless it is
+  // recorded here as it happens.
+  const aiRow = db()
+    .prepare("SELECT * FROM ai_usage WHERE call_id = ?")
+    .get(callId) as { model: string; input_tokens: number; output_tokens: number; cost_usd: number } | undefined;
+  check("model usage written to the cost ledger", Boolean(aiRow));
+  check("tokens recorded as reported", aiRow?.input_tokens === 20000 && aiRow?.output_tokens === 2000);
+  // 20k in at $5/MTok + 2k out at $25/MTok = $0.15.
+  check(
+    "ledger row priced from the tokens",
+    Math.abs((aiRow?.cost_usd ?? 0) - 0.15) < 0.0001,
+    String(aiRow?.cost_usd),
+  );
 
   const parsed = calls.parseAnalysis(analysed)!;
   check("briefing carries the prospect's figures", parsed.analysis.discounted_weekly_loss === 1800);

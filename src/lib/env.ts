@@ -42,8 +42,18 @@ function float(name: string, fallback: number): number {
 export const config = {
   databasePath: optional("DATABASE_PATH") ?? "./data/dashboard.db",
 
-  // Dialling limits. Defaults follow plan.md's "10-20 calls per day" target.
-  maxCallsPerDay: num("MAX_CALLS_PER_DAY", 20),
+  // Dialling limits.
+  //
+  // Raised 20 -> 250 on 18 Aug 2026 on request. Worth knowing before it moves
+  // again: this is a throughput/cost guard, NOT a compliance one. No ACMA
+  // instrument caps calls per day — the Telemarketing Standard 2017 binds
+  // calling hours, caller-ID disclosure and terminating on request, and the
+  // Do Not Call Register Act binds who may be rung at all. Neither limits
+  // volume. What DOES bite is plan.md's risk table: carrier spam-flagging is
+  // "not a real problem under 20 calls/day" but "becomes the dominant problem
+  // above ~200/day". 250 sits in that zone, so if answer rates drop off a
+  // cliff on the Twilio number, suspect this constant before blaming the script.
+  maxCallsPerDay: num("MAX_CALLS_PER_DAY", 250),
   dispatchChunkSize: num("DISPATCH_CHUNK_SIZE", 5),
   callConcurrency: num("CALL_CONCURRENCY", 2),
 

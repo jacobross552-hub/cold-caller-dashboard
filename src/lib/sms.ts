@@ -6,7 +6,8 @@
  */
 
 import { optional } from "./env";
-import { logEvent } from "./db";
+import { db, logEvent } from "./db";
+import { smsUnitCostUsd } from "./costs";
 
 export function smsConfigured(): boolean {
   return Boolean(
@@ -17,7 +18,10 @@ export function smsConfigured(): boolean {
   );
 }
 
-export async function sendAlertSms(body: string): Promise<{ sent: boolean; detail: string }> {
+export async function sendAlertSms(
+  body: string,
+  context: { callId?: number; purpose?: string } = {},
+): Promise<{ sent: boolean; detail: string }> {
   if (!smsConfigured()) {
     return { sent: false, detail: "Twilio isn't configured, so no text was sent." };
   }
@@ -45,6 +49,38 @@ export async function sendAlertSms(body: string): Promise<{ sent: boolean; detai
       logEvent("sms.failed", `Booking text failed (${response.status})`, text.slice(0, 500));
       return { sent: false, detail: `Twilio rejected the message: ${text.slice(0, 200)}` };
     }
+
+    // Record the send so lifetime SMS spend is summed from real sends rather
+    // than guessed from the number of bookings. Twilio does not return a
+    // settled price at send time — `price` is null until billing catches up —
+    // so the row carries our configured rate and the SID, which is what would
+    // let the real prices be reconciled later. The costs page labels this
+    // line "rated", not "measured", for exactly that reason.
+    let sid: string | null = null;
+    let segments = 1;
+    try {
+      const payload = JSON.parse(text) as { sid?: string; num_segments?: string };
+      sid = payload.sid ?? null;
+      const parsed = Number(payload.num_segments);
+      if (Number.isFinite(parsed) && parsed > 0) segments = parsed;
+    } catch {
+      // A send that worked but whose body we couldn't parse still counts as
+      // one message — never let bookkeeping swallow a successful text.
+    }
+
+    db()
+      .prepare(
+        `INSERT INTO sms_sends (call_id, purpose, provider_sid, segments, cost_usd, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        context.callId ?? null,
+        context.purpose ?? "booking_alert",
+        sid,
+        segments,
+        segments * smsUnitCostUsd(),
+        Date.now(),
+      );
 
     logEvent("sms.sent", `Booking alert texted to ${to}`);
     return { sent: true, detail: `Texted ${to}.` };

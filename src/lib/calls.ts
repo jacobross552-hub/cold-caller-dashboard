@@ -15,6 +15,7 @@ import { sendAlertSms } from "./sms";
 import { buildBookingSms, findBookedEvent } from "./calendar-event";
 import { suppress } from "./suppression";
 import { checkQuoteAgainstTable, formatMoney, type QuoteCheck } from "./pricing";
+import { extractCallCost, priceAnthropicUsage, smsUnitCostUsd } from "./costs";
 import {
   analyseCall,
   refineOutcome,
@@ -40,7 +41,14 @@ export interface CallRow {
   duration_secs: number | null;
   outcome: Outcome | null;
   termination_reason: string | null;
+  /** ElevenLabs CREDITS, not money. Never sum this into a spend figure. */
   cost: number | null;
+  /** What the call actually cost, USD. cost_fiat off the webhook. */
+  cost_fiat_usd: number | null;
+  /** The speech/telephony half of cost_fiat_usd, USD. */
+  platform_price_usd: number | null;
+  /** The agent's-own-LLM half of cost_fiat_usd, USD. Billed by ElevenLabs. */
+  llm_price_usd: number | null;
   booked: number;
   transcript_json: string | null;
   raw_json: string | null;
@@ -120,13 +128,16 @@ export function recordCall(data: WebhookCallData): { callId: number; outcome: Ou
   // meetings page.
   const bookedByTool = bookingWasCreated(data.transcript) ? 1 : 0;
 
+  const fiat = extractCallCost(data.metadata);
+
   database
     .prepare(
       `INSERT INTO calls (
          conversation_id, lead_id, run_id, business_name, phone, started_at,
          duration_secs, outcome, termination_reason, cost, booked,
-         transcript_json, raw_json, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         transcript_json, raw_json, created_at,
+         cost_fiat_usd, platform_price_usd, llm_price_usd
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(conversation_id) DO UPDATE SET
          lead_id            = COALESCE(excluded.lead_id, calls.lead_id),
          run_id             = COALESCE(excluded.run_id, calls.run_id),
@@ -139,7 +150,10 @@ export function recordCall(data: WebhookCallData): { callId: number; outcome: Ou
          cost               = excluded.cost,
          booked             = MAX(calls.booked, excluded.booked),
          transcript_json    = excluded.transcript_json,
-         raw_json           = excluded.raw_json`,
+         raw_json           = excluded.raw_json,
+         cost_fiat_usd      = excluded.cost_fiat_usd,
+         platform_price_usd = excluded.platform_price_usd,
+         llm_price_usd      = excluded.llm_price_usd`,
     )
     .run(
       data.conversation_id,
@@ -156,6 +170,10 @@ export function recordCall(data: WebhookCallData): { callId: number; outcome: Ou
       JSON.stringify(data.transcript ?? []),
       JSON.stringify(data),
       Date.now(),
+      // The REAL money, in USD. `cost` above is credits — see extractCallCost.
+      fiat.costFiatUsd,
+      fiat.platformPriceUsd,
+      fiat.llmPriceUsd,
     );
 
   const row = database
@@ -213,10 +231,37 @@ export async function analyseAndStore(callId: number): Promise<void> {
   }
 
   try {
-    const { analysis, quoteCheck } = await analyseCall(data, {
+    const { analysis, quoteCheck, usage } = await analyseCall(data, {
       businessName: call.business_name,
       phone: call.phone,
     });
+
+    // Cost ledger. Priced now, at today's rates, and frozen on the row — so a
+    // past month keeps its real cost after Anthropic changes prices. Same
+    // principle as the lead finder's `lead_api_calls`.
+    database
+      .prepare(
+        `INSERT INTO ai_usage (
+           call_id, purpose, model, input_tokens, output_tokens,
+           cache_read_tokens, cache_write_tokens, cost_usd, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        callId,
+        "call_analysis",
+        usage.model,
+        usage.inputTokens,
+        usage.outputTokens,
+        usage.cacheReadTokens,
+        usage.cacheWriteTokens,
+        priceAnthropicUsage(usage.model, {
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          cacheReadTokens: usage.cacheReadTokens,
+          cacheWriteTokens: usage.cacheWriteTokens,
+        }),
+        Date.now(),
+      );
 
     const refined = refineOutcome(outcome, analysis);
     const booked = call.booked === 1 || analysis.booking.booked ? 1 : 0;
@@ -314,7 +359,7 @@ export async function alertOnBooking(callId: number): Promise<void> {
     event,
   });
 
-  const result = await sendAlertSms(body);
+  const result = await sendAlertSms(body, { callId, purpose: "booking_alert" });
   if (result.sent) {
     database.prepare("UPDATE calls SET alert_sent_at = ? WHERE id = ?").run(Date.now(), callId);
   }

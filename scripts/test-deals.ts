@@ -19,6 +19,7 @@ process.env.DATABASE_PATH = SCRATCH;
 const { db } = require("../src/lib/db") as typeof import("../src/lib/db");
 const deals = require("../src/lib/deals") as typeof import("../src/lib/deals");
 const funnel = require("../src/lib/funnel") as typeof import("../src/lib/funnel");
+const calls = require("../src/lib/calls") as typeof import("../src/lib/calls");
 
 let passed = 0;
 let failed = 0;
@@ -123,8 +124,10 @@ db().exec("DELETE FROM deals");
 db().exec("DELETE FROM calls");
 nextCallId = 0;
 
-// 11 dialled: 2 no_answer, 1 voicemail, 1 failed (none answered),
-// 7 answered (2 hung_up_early, 2 connected, 3 completed), of which 3 booked.
+// 11 seeded, but 'failed' is excluded from every stat (Bob's instruction —
+// a known telephony-layer issue, not signal): 10 dialled = 2 no_answer,
+// 1 voicemail (none answered), 7 answered (2 hung_up_early, 2 connected,
+// 3 completed), of which 3 booked. The 1 'failed' call counts nowhere.
 seedCall({ outcome: "no_answer" });
 seedCall({ outcome: "no_answer" });
 seedCall({ outcome: "voicemail" });
@@ -142,14 +145,44 @@ deals.recordLost(bookedB, "bad_timing", null);
 void bookedC; // left pending on purpose
 
 const f = funnel.conversionFunnel();
-equal("dialled", f.dialled, 11);
+equal("dialled excludes the failed call — 11 seeded, 10 counted", f.dialled, 10);
 equal("answered", f.answered, 7);
 equal("booked", f.booked, 3);
 equal("won via deals", f.deals.won, 1);
 equal("lost via deals", f.deals.lost, 1);
 equal("pending via deals", f.deals.pending, 1);
 
-console.log("\n7. pct()\n");
+console.log("\n7. Failed calls are excluded from every stat (Bob's instruction — a known issue, not signal)\n");
+
+db().exec("DELETE FROM deals");
+db().exec("DELETE FROM calls");
+nextCallId = 0;
+
+seedCall({ outcome: "completed", booked: true });
+seedCall({ outcome: "connected" });
+const failedCall = seedCall({ outcome: "failed" });
+
+const statsWithFailed = calls.callStats();
+equal("callStats().total excludes the failed call — 3 seeded, 2 counted", statsWithFailed.total, 2);
+check("callStats().byOutcome carries no 'failed' key at all", !("failed" in statsWithFailed.byOutcome));
+equal("callStats().booked is unaffected (the failed call was never booked)", statsWithFailed.booked, 1);
+
+const windowEnd = Date.now() + 1000;
+const windowed = funnel.conversionFunnelInWindow(0, windowEnd);
+equal("conversionFunnelInWindow() dialled also excludes the failed call", windowed.dialled, 2);
+
+// A booked call that also happens to be marked outcome='failed' shouldn't be
+// realistic in practice, but the exclusion must hold even then — booked
+// counts real, confirmed meetings, not calls the telephony layer choked on.
+db().prepare("UPDATE calls SET outcome = 'failed', booked = 1 WHERE id = ?").run(failedCall);
+const statsWithFailedBooked = calls.callStats();
+equal(
+  "a failed call is excluded from the booked count too, even if the booked flag is somehow set",
+  statsWithFailedBooked.booked,
+  1,
+);
+
+console.log("\n8. pct()\n");
 
 equal("half is 50%", funnel.pct(3, 6), 50);
 equal("rounds to one decimal", funnel.pct(1, 3), 33.3);

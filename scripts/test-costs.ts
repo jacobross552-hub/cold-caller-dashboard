@@ -297,6 +297,15 @@ async function main() {
   close("cost per call is the total over three", units.perCallAud!, full.totalAud / 3, 0.01);
   close("cost per booking is the total over one", units.perBookingAud!, full.totalAud, 0.01);
 
+  // A fourth call, failed at the telephony layer — Bob's instruction: exclude
+  // it from every stat, including the "calls" denominator here. The real
+  // total spend (full.totalAud) doesn't change; only the count does.
+  database
+    .prepare(`INSERT INTO calls (conversation_id, outcome, created_at) VALUES (?, 'failed', ?)`)
+    .run("conv_failed", now);
+  const unitsWithFailed = costs.unitCosts(full);
+  equal("the failed call does not inflate the calls count", unitsWithFailed.calls, 3);
+
   // --- Cleanup -------------------------------------------------------------
   for (const suffix of ["", "-wal", "-shm"]) {
     try {

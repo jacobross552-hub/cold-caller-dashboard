@@ -31,18 +31,25 @@ export function conversionFunnel(): ConversionFunnel {
   };
 }
 
-/** Same funnel, scoped to calls created in [start, end) — the weekly learning job's input. */
+/**
+ * Same funnel, scoped to calls created in [start, end) — the weekly learning
+ * job's input. Excludes outcome='failed' throughout, same as callStats() —
+ * see that function's doc comment for why.
+ */
 export function conversionFunnelInWindow(start: number, end: number): ConversionFunnel {
   const database = db();
+  const notFailed = "(outcome IS NULL OR outcome != 'failed')";
 
   const dialled = (
-    database.prepare("SELECT COUNT(*) AS n FROM calls WHERE created_at >= ? AND created_at < ?").get(start, end) as {
-      n: number;
-    }
+    database
+      .prepare(`SELECT COUNT(*) AS n FROM calls WHERE created_at >= ? AND created_at < ? AND ${notFailed}`)
+      .get(start, end) as { n: number }
   ).n;
 
   const rows = database
-    .prepare("SELECT outcome, COUNT(*) AS n FROM calls WHERE created_at >= ? AND created_at < ? GROUP BY outcome")
+    .prepare(
+      `SELECT outcome, COUNT(*) AS n FROM calls WHERE created_at >= ? AND created_at < ? AND ${notFailed} GROUP BY outcome`,
+    )
     .all(start, end) as unknown as Array<{ outcome: string; n: number }>;
   const byOutcome: Record<string, number> = {};
   for (const row of rows) byOutcome[row.outcome] = row.n;
@@ -50,7 +57,9 @@ export function conversionFunnelInWindow(start: number, end: number): Conversion
 
   const booked = (
     database
-      .prepare("SELECT COUNT(*) AS n FROM calls WHERE created_at >= ? AND created_at < ? AND booked = 1")
+      .prepare(
+        `SELECT COUNT(*) AS n FROM calls WHERE created_at >= ? AND created_at < ? AND booked = 1 AND ${notFailed}`,
+      )
       .get(start, end) as { n: number }
   ).n;
 

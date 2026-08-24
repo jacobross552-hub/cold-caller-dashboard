@@ -428,9 +428,15 @@ export function getCall(id: number): CallRow | null {
   return (db().prepare("SELECT * FROM calls WHERE id = ?").get(id) ?? null) as CallRow | null;
 }
 
+/**
+ * Excludes outcome='failed' throughout — calls that errored out at the
+ * telephony layer, per Bob's instruction, are a known issue he's tracking
+ * separately and shouldn't inflate or deflate any dashboard stat. They still
+ * appear as individual rows in the call log; they just don't count here.
+ */
 export function callStats() {
   const rows = db()
-    .prepare("SELECT outcome, COUNT(*) AS n FROM calls GROUP BY outcome")
+    .prepare("SELECT outcome, COUNT(*) AS n FROM calls WHERE outcome IS NULL OR outcome != 'failed' GROUP BY outcome")
     .all() as unknown as Array<{ outcome: string; n: number }>;
 
   const byOutcome: Record<string, number> = {};
@@ -441,7 +447,9 @@ export function callStats() {
   }
 
   const booked = (
-    db().prepare("SELECT COUNT(*) AS n FROM calls WHERE booked = 1").get() as { n: number }
+    db()
+      .prepare("SELECT COUNT(*) AS n FROM calls WHERE booked = 1 AND (outcome IS NULL OR outcome != 'failed')")
+      .get() as { n: number }
   ).n;
 
   return { total, booked, byOutcome };

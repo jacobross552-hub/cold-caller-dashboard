@@ -639,9 +639,19 @@ export interface UnitCosts {
   perBookingAud: number | null;
 }
 
+/**
+ * The "calls" count here excludes outcome='failed' — a call that errored out
+ * at the telephony layer (known issue, tracked separately) shouldn't drag
+ * down the per-call average. The dollar total itself (breakdown.totalAud) is
+ * untouched — real spend stays real spend regardless of which calls it came
+ * from, only the denominator changes.
+ */
 export function unitCosts(breakdown: CostBreakdown): UnitCosts {
   const row = db()
-    .prepare(`SELECT COUNT(*) AS calls, COALESCE(SUM(booked), 0) AS bookings FROM calls`)
+    .prepare(
+      `SELECT COUNT(*) AS calls, COALESCE(SUM(booked), 0) AS bookings
+         FROM calls WHERE outcome IS NULL OR outcome != 'failed'`,
+    )
     .get() as { calls: number; bookings: number };
 
   return {

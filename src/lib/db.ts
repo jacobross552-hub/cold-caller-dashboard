@@ -300,7 +300,8 @@ function migrate(database: DatabaseSync) {
       created_at           INTEGER NOT NULL,
       ready_at             INTEGER,
       torn_down_at         INTEGER,
-      teardown_reason      TEXT
+      teardown_reason      TEXT,
+      branch_id            TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_demo_agents_status ON demo_agents(status);
@@ -410,6 +411,11 @@ function migrate(database: DatabaseSync) {
   // exactly the thing this table stopped doing — a stale guess that renders as
   // if it were a real charge.
   dropColumn(database, "sms_sends", "cost_usd");
+
+  // Needed to build a working ElevenLabs dashboard link — the URL is
+  // /app/agents/agents/{agentId}?branchId={branchId}, not just the agent id
+  // alone (confirmed against a real working link; the id-only URL 404s).
+  addColumn(database, "demo_agents", "branch_id", "TEXT");
 
   // Google's place_id is the stable dedup key — the same business survives a
   // rename or a number change. Partial index so the many rows with no

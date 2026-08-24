@@ -130,13 +130,14 @@ async function main() {
   const createCalls: Array<{ name: string }> = [];
   elevenlabs.createAgent = (async (params: { name: string }) => {
     createCalls.push({ name: params.name });
-    return { agent_id: "agent_fake_1" };
+    return { agent_id: "agent_fake_1", main_branch_id: "branch_fake_1" };
   }) as typeof elevenlabs.createAgent;
 
   await demoAgent.provisionDemoAgent(call1.id);
   const row1 = demoAgent.getDemoAgent(call1.id)!;
   equal("status is ready", row1.status, "ready");
   equal("agent id stored", row1.elevenlabs_agent_id, "agent_fake_1");
+  equal("branch id stored — needed for a working dashboard link", row1.branch_id, "branch_fake_1");
   check("research was stored", Boolean(row1.research_json));
   equal("createAgent called exactly once", createCalls.length, 1);
 
@@ -161,13 +162,29 @@ async function main() {
 
   elevenlabs.createAgent = (async (params: { name: string }) => {
     createCalls.push({ name: params.name });
-    return { agent_id: "agent_fake_2" };
+    return { agent_id: "agent_fake_2", main_branch_id: "branch_fake_2" };
   }) as typeof elevenlabs.createAgent;
 
   await demoAgent.provisionDemoAgent(call2.id); // retry
   const retriedRow = demoAgent.getDemoAgent(call2.id)!;
   equal("retry recovers to ready", retriedRow.status, "ready");
   equal("retry got the new agent id", retriedRow.elevenlabs_agent_id, "agent_fake_2");
+
+  console.log("\n8b. launchDemoUrl — the exact format that actually works\n");
+
+  // Confirmed against a real working link pasted back from the ElevenLabs
+  // dashboard: the path has agents/agents (doubled, not a typo) and needs
+  // ?branchId= — the agent-id-only URL 404s in production.
+  equal(
+    "URL includes the doubled agents/agents path and branchId query param",
+    demoAgent.launchDemoUrl("agent_xyz", "agtbrch_abc"),
+    "https://elevenlabs.io/app/agents/agents/agent_xyz?branchId=agtbrch_abc",
+  );
+  equal(
+    "falls back to no query param when branch id is missing, rather than a broken '?branchId=null'",
+    demoAgent.launchDemoUrl("agent_xyz", null),
+    "https://elevenlabs.io/app/agents/agents/agent_xyz",
+  );
 
   console.log("\n9. teardownDemoAgent deletes on ElevenLabs and marks torn down, once\n");
 

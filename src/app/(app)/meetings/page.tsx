@@ -88,7 +88,7 @@ export default async function MeetingsPage() {
                   return (
                     <p style={{ margin: "0 0 12px" }}>
                       <a
-                        href={launchDemoUrl(demoAgent.elevenlabs_agent_id)}
+                        href={launchDemoUrl(demoAgent.elevenlabs_agent_id, demoAgent.branch_id)}
                         target="_blank"
                         rel="noreferrer noopener"
                         style={{ fontWeight: 600 }}

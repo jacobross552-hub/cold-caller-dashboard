@@ -38,6 +38,7 @@ export interface DemoAgentRow {
   ready_at: number | null;
   torn_down_at: number | null;
   teardown_reason: string | null;
+  branch_id: string | null;
 }
 
 export function getDemoAgent(callId: number): DemoAgentRow | null {
@@ -55,9 +56,15 @@ export function getDemoAgentsByCallIds(callIds: number[]): Map<number, DemoAgent
   return map;
 }
 
-/** The URL that opens ElevenLabs' own agent editor — its browser test-call widget lives inside it. */
-export function launchDemoUrl(agentId: string): string {
-  return `https://elevenlabs.io/app/agents/${encodeURIComponent(agentId)}`;
+/**
+ * The URL that opens ElevenLabs' own agent editor — its browser test-call
+ * widget lives inside it. Confirmed against a real working link: the path is
+ * /app/agents/agents/{agentId} (the doubled "agents" is real, not a typo),
+ * and it needs ?branchId=... too — the agent-id-only URL 404s.
+ */
+export function launchDemoUrl(agentId: string, branchId: string | null): string {
+  const base = `https://elevenlabs.io/app/agents/agents/${encodeURIComponent(agentId)}`;
+  return branchId ? `${base}?branchId=${encodeURIComponent(branchId)}` : base;
 }
 
 function buildSystemPrompt(research: DemoResearch): string {
@@ -159,9 +166,9 @@ export async function provisionDemoAgent(callId: number): Promise<void> {
 
     database
       .prepare(
-        `UPDATE demo_agents SET status = 'ready', elevenlabs_agent_id = ?, research_json = ?, ready_at = ? WHERE call_id = ?`,
+        `UPDATE demo_agents SET status = 'ready', elevenlabs_agent_id = ?, branch_id = ?, research_json = ?, ready_at = ? WHERE call_id = ?`,
       )
-      .run(agent.agent_id, JSON.stringify(research), Date.now(), callId);
+      .run(agent.agent_id, agent.main_branch_id, JSON.stringify(research), Date.now(), callId);
 
     logEvent("demo_agent.ready", `Demo agent built for call ${callId} (${research.businessName}).`, {
       callId,

@@ -33,7 +33,7 @@ export function DemoAgentPanel({ callId, demoAgent }: { callId: number; demoAgen
         <>
           <p style={{ marginTop: 0 }}>
             <a
-              href={launchDemoUrl(demoAgent.elevenlabs_agent_id)}
+              href={launchDemoUrl(demoAgent.elevenlabs_agent_id, demoAgent.branch_id)}
               target="_blank"
               rel="noreferrer noopener"
               style={{ fontWeight: 600 }}

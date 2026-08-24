@@ -124,6 +124,8 @@ export interface CreateAgentParams {
 
 export interface CreatedAgent {
   agent_id: string;
+  /** Needed to build a working dashboard link — see launchDemoUrl below. */
+  main_branch_id: string;
 }
 
 /**

@@ -6,7 +6,7 @@
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
     "start": "next start",
-    "test": "npm run test:hours && npm run test:leads && npm run test:import && npm run test:run && npm run test:calendar && npm run test:integration && npm run test:costs && npm run test:deals && npm run test:finance && npm run test:demo-agent && npm run test:learning",
+    "test": "npm run test:hours && npm run test:leads && npm run test:import && npm run test:run && npm run test:calendar && npm run test:integration && npm run test:costs && npm run test:deals && npm run test:finance && npm run test:demo-agent && npm run test:learning && npm run test:elevenlabs-agents",
     "test:hours": "tsc -p tsconfig.test.json && node .test-build/scripts/test-calling-hours.js",
     "test:leads": "tsc -p tsconfig.test.json && node .test-build/scripts/test-lead-finder.js",
     "test:import": "tsc -p tsconfig.test.json && node .test-build/scripts/test-lead-import.js",
@@ -19,6 +19,7 @@
     "test:finance": "tsc -p tsconfig.test.json && node .test-build/scripts/test-finance.js",
     "test:demo-agent": "tsc -p tsconfig.test.json && node .test-build/scripts/test-demo-agent.js",
     "test:learning": "tsc -p tsconfig.test.json && node .test-build/scripts/test-learning.js",
+    "test:elevenlabs-agents": "tsc -p tsconfig.test.json && node .test-build/scripts/test-elevenlabs-agents.js",
     "backfill:costs": "tsc -p tsconfig.test.json && node --env-file-if-exists=.env .test-build/scripts/backfill-costs.js"
   },
   "dependencies": {

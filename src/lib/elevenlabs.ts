@@ -197,7 +197,17 @@ export async function updateAgentPrompt(agentId: string, newPromptText: string):
   const prompt = agent["prompt"];
   if (!isRecord(prompt)) throw new Error("Agent config has no conversation_config.agent.prompt to update.");
 
-  const updatedPrompt = { ...prompt, prompt: newPromptText };
+  // GET returns BOTH `tools` (the tool definitions, expanded for reading)
+  // and `tool_ids` (the same tools by reference — the canonical, writable
+  // form) under prompt. Sending both back on a PATCH is rejected outright:
+  // "Cannot specify both tools and tool IDs" (confirmed against a real
+  // agent — this agent's `tools` array is exactly `tool_ids` expanded, plus
+  // the voicemail-detection system tool, which is separately configured via
+  // `built_in_tools` and doesn't need to travel through `tools` either).
+  // Drop `tools`, keep `tool_ids` — never both.
+  const { tools: _expandedTools, ...promptWithoutExpandedTools } = prompt;
+  void _expandedTools;
+  const updatedPrompt = { ...promptWithoutExpandedTools, prompt: newPromptText };
   const updatedAgent = { ...agent, prompt: updatedPrompt };
   const updatedConversationConfig = { ...cc, agent: updatedAgent };
 

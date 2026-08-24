@@ -87,11 +87,22 @@ export async function gatherResearch(lead: LeadRow | null, analysis: CallAnalysi
   let openingHours: string[] | null = null;
   if (lead?.opening_hours_json) {
     try {
-      const parsed = JSON.parse(lead.opening_hours_json);
-      if (Array.isArray(parsed)) openingHours = parsed.filter((h) => typeof h === "string");
+      // Google's regularOpeningHours is an OBJECT — { periods: [...], weekdayDescriptions: [...],
+      // openNow, nextCloseTime } — not a bare array. This is what leads.opening_hours_json actually
+      // stores (see lead-finder/places.ts's toPlaceResult). weekdayDescriptions is the human-readable
+      // "Monday: 7:30 am – 10:00 pm" form, which is what a demo prompt actually wants.
+      const parsed = JSON.parse(lead.opening_hours_json) as { weekdayDescriptions?: unknown };
+      const days = parsed.weekdayDescriptions;
+      if (Array.isArray(days) && days.every((d) => typeof d === "string") && days.length > 0) {
+        openingHours = days as string[];
+      } else {
+        gaps.push("Stored opening hours had no day-by-day description — skipped.");
+      }
     } catch {
       gaps.push("Stored opening hours weren't readable — skipped.");
     }
+  } else if (lead) {
+    gaps.push("No opening hours on file for this lead.");
   }
 
   let websiteText: string | null = null;

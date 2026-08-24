@@ -123,6 +123,41 @@ async function main() {
   equal("opening hours null on parse failure", badHours.openingHours, null);
   check("the parse failure is recorded", badHours.gaps.some((g) => g.includes("opening hours")));
 
+  console.log("\n5b. gatherResearch reads real Google opening-hours shape correctly\n");
+
+  // The actual shape leads.opening_hours_json stores — an OBJECT with
+  // weekdayDescriptions, not a bare array. A real bug: earlier code assumed
+  // the bare-array shape and silently read every real business's hours as
+  // null. Confirmed against a real stored row before fixing this.
+  const realGoogleShape = JSON.stringify({
+    openNow: true,
+    periods: [{ open: { day: 1, hour: 7, minute: 30 }, close: { day: 1, hour: 22, minute: 0 } }],
+    weekdayDescriptions: [
+      "Monday: 7:30 am – 10:00 pm",
+      "Tuesday: 7:30 am – 10:00 pm",
+      "Wednesday: 7:30 am – 10:00 pm",
+      "Thursday: 7:30 am – 10:00 pm",
+      "Friday: 7:30 am – 10:00 pm",
+      "Saturday: 7:30 am – 10:00 pm",
+      "Sunday: 7:30 am – 10:00 pm",
+    ],
+  });
+  const withRealHours = await research.gatherResearch(fakeLead({ opening_hours_json: realGoogleShape }), null);
+  equal("weekdayDescriptions extracted as the opening hours", withRealHours.openingHours, [
+    "Monday: 7:30 am – 10:00 pm",
+    "Tuesday: 7:30 am – 10:00 pm",
+    "Wednesday: 7:30 am – 10:00 pm",
+    "Thursday: 7:30 am – 10:00 pm",
+    "Friday: 7:30 am – 10:00 pm",
+    "Saturday: 7:30 am – 10:00 pm",
+    "Sunday: 7:30 am – 10:00 pm",
+  ]);
+  check("no gap recorded when real hours were found", !withRealHours.gaps.some((g) => g.toLowerCase().includes("hours")));
+
+  const noHoursOnFile = await research.gatherResearch(fakeLead({ opening_hours_json: null }), null);
+  equal("genuinely absent hours stay null", noHoursOnFile.openingHours, null);
+  check("absence is recorded as a gap, distinct from a parse failure", noHoursOnFile.gaps.some((g) => g === "No opening hours on file for this lead."));
+
   console.log("\n6. provisionDemoAgent — happy path\n");
 
   const database = db();

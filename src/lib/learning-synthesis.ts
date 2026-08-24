@@ -138,6 +138,12 @@ export interface SynthesisResult {
  * on a real run (an "unterminated string" parse error at the tail of the
  * response — the classic signature of hitting max_tokens mid-string). This
  * headroom, plus capping script proposals to one per run below, is the fix.
+ *
+ * A max_tokens this size also crosses the Anthropic SDK's own threshold for
+ * "this might take over 10 minutes" — which it refuses to run as a plain
+ * blocking call and requires streaming for instead (confirmed on a second
+ * real run: "Streaming is required for operations that may take longer than
+ * 10 minutes"). Hence .stream() + .finalMessage() below rather than .parse().
  */
 const MAX_OUTPUT_TOKENS = 32_000;
 
@@ -146,13 +152,14 @@ export async function synthesizeProposals(
   currentPrompt: string,
   priorRejections: PriorRejection[],
 ): Promise<SynthesisResult> {
-  const response = await anthropic().messages.parse({
+  const stream = anthropic().messages.stream({
     model: config.anthropicModel,
     max_tokens: MAX_OUTPUT_TOKENS,
     system: synthesisSystemPrompt(currentPrompt, priorRejections),
     output_config: { effort: "medium", format: zodOutputFormat(SynthesisSchema) },
     messages: [{ role: "user", content: `THIS WEEK'S AGGREGATED STATS\n${statsSummaryForPrompt(stats)}` }],
   });
+  const response = await stream.finalMessage();
 
   if (response.stop_reason === "max_tokens") {
     throw new Error(

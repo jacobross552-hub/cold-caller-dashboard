@@ -105,6 +105,12 @@ export function featureStatus() {
     leadFinder: Boolean(optional("GOOGLE_PLACES_API_KEY")),
     /** Optional: raises lead confidence and lets mobile numbers through. */
     abnCheck: Boolean(optional("ABN_LOOKUP_GUID")),
+    /**
+     * Read-only. Without this, the finance page's revenue line falls back to
+     * what was RECORDED when a deal was marked Won, not what Stripe confirms
+     * was actually received — see src/lib/stripe.ts.
+     */
+    stripe: Boolean(optional("STRIPE_SECRET_KEY")),
   };
 }
 

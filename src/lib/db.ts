@@ -220,19 +220,30 @@ function migrate(database: DatabaseSync) {
     CREATE INDEX IF NOT EXISTS idx_ai_usage_created ON ai_usage(created_at);
 
     /*
-     * One row per SMS the dashboard sends. Twilio does not return a settled
-     * price at send time, so cost_usd is the configured rate, not a billed
-     * figure — the costs page labels it as such. The message SID is kept so
-     * the real prices can be reconciled from Twilio later if it ever matters.
+     * One row per SMS the dashboard sends.
+     *
+     * The price is Twilio's own, fetched afterwards by SID — not a rate typed
+     * into .env. Twilio does not populate Message.price when the message is
+     * accepted ("may not be immediately available"), so every row starts
+     * unpriced and is reconciled later. An unreconciled row is PENDING, not
+     * free: never coalesce a null price to zero.
      */
     CREATE TABLE IF NOT EXISTS sms_sends (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      call_id     INTEGER REFERENCES calls(id) ON DELETE SET NULL,
-      purpose     TEXT    NOT NULL,
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      call_id      INTEGER REFERENCES calls(id) ON DELETE SET NULL,
+      purpose      TEXT    NOT NULL,
       provider_sid TEXT,
-      segments    INTEGER NOT NULL DEFAULT 1,
-      cost_usd    REAL    NOT NULL,
-      created_at  INTEGER NOT NULL
+      segments     INTEGER NOT NULL DEFAULT 1,
+      /*
+       * What Twilio ACTUALLY charged, in whatever currency Twilio bills this
+       * account in. Both are NULL until the deferred reconciliation fetches
+       * them: Twilio does not populate a price when the message is accepted.
+       * NULL means "not settled yet" and must render as pending, never as $0.
+       */
+      price            REAL,
+      price_unit       TEXT,
+      price_fetched_at INTEGER,
+      created_at   INTEGER NOT NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_sms_sends_created ON sms_sends(created_at);
@@ -245,6 +256,108 @@ function migrate(database: DatabaseSync) {
       added_by TEXT,
       added_at INTEGER NOT NULL
     );
+
+    /*
+     * One row per BOOKED MEETING, recording what actually happened once the
+     * demo call itself has happened. Won or Lost, and if Won, the price that
+     * was actually agreed — which is expected to differ from src/lib/pricing.ts's
+     * recommendation. That gap is exactly the signal the weekly learning job
+     * will eventually read; it is not an error to be reconciled away.
+     *
+     * UNIQUE(call_id): one outcome per meeting. Recording again overwrites the
+     * previous outcome rather than accumulating history — this is a correction
+     * mechanism (misclick, changed mind), not an audit log. recorded_at
+     * always reflects the most recent recording.
+     */
+    CREATE TABLE IF NOT EXISTS deals (
+      id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+      call_id                 INTEGER NOT NULL UNIQUE REFERENCES calls(id) ON DELETE CASCADE,
+      status                  TEXT    NOT NULL,
+      lost_reason             TEXT,
+      lost_notes              TEXT,
+      agreed_setup_fee        REAL,
+      agreed_monthly_retainer REAL,
+      recorded_at             INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_deals_status ON deals(status);
+
+    /*
+     * One row per booked meeting's auto-generated demo agent (Segment 5).
+     * Disposable by design: torn down (elevenlabs_agent_id deleted via the
+     * API, this row's status flipped to 'torn_down') once Segment 2 records
+     * an outcome for the meeting, Won or Lost either way. A meeting never has
+     * more than one demo agent — UNIQUE(call_id) — because provisioning is
+     * idempotent (see demo-agent.ts's check-before-provision).
+     */
+    CREATE TABLE IF NOT EXISTS demo_agents (
+      id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+      call_id              INTEGER NOT NULL UNIQUE REFERENCES calls(id) ON DELETE CASCADE,
+      elevenlabs_agent_id  TEXT,
+      status               TEXT    NOT NULL,
+      research_json        TEXT,
+      error                TEXT,
+      created_at           INTEGER NOT NULL,
+      ready_at             INTEGER,
+      torn_down_at         INTEGER,
+      teardown_reason      TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_demo_agents_status ON demo_agents(status);
+
+    /*
+     * Weekly auto-learning (Segment 6). One row per run of the job — fires
+     * once a week (see dispatcher.ts's weeklyLearningTick). week_start is
+     * UNIQUE so the once-a-minute scheduler heartbeat landing inside the
+     * trigger window more than once in the same week can never start a
+     * second run for it.
+     */
+    CREATE TABLE IF NOT EXISTS learning_runs (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      week_start   INTEGER NOT NULL UNIQUE,
+      week_end     INTEGER NOT NULL,
+      status       TEXT    NOT NULL,
+      stats_json   TEXT,
+      error        TEXT,
+      created_at   INTEGER NOT NULL,
+      completed_at INTEGER
+    );
+
+    /*
+     * One row per proposed change within a run.
+     *
+     * Script proposals (category='script') carry the FULL exact prompt text
+     * on both sides, not a fragment — previous_prompt_text is what makes a
+     * revert exact rather than approximate, and new_prompt_text is what
+     * actually gets PATCHed to ElevenLabs on accept. The diff shown in the
+     * UI is computed from these two strings by plain code, never by the
+     * model, so what's displayed can never drift from what's applied.
+     *
+     * status progresses pending -> accepted|rejected. accepted script rows
+     * additionally track applied_at and, if reverted later, reverted_at —
+     * that pair is the "running history of what's been auto-applied" the
+     * build asked for, queried separately from a week's still-pending rows.
+     */
+    CREATE TABLE IF NOT EXISTS learning_proposals (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id                INTEGER NOT NULL REFERENCES learning_runs(id) ON DELETE CASCADE,
+      category              TEXT    NOT NULL,
+      title                 TEXT    NOT NULL,
+      reasoning             TEXT    NOT NULL,
+      confidence            TEXT    NOT NULL,
+      sample_size           INTEGER,
+      previous_prompt_text  TEXT,
+      new_prompt_text       TEXT,
+      status                TEXT    NOT NULL DEFAULT 'pending',
+      rejected_reason       TEXT,
+      decided_at            INTEGER,
+      applied_at            INTEGER,
+      reverted_at           INTEGER,
+      created_at            INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_learning_proposals_run ON learning_proposals(run_id);
+    CREATE INDEX IF NOT EXISTS idx_learning_proposals_status ON learning_proposals(status);
   `);
 
   // --- Additive columns on `leads` ----------------------------------------
@@ -274,6 +387,30 @@ function migrate(database: DatabaseSync) {
   addColumn(database, "calls", "platform_price_usd", "REAL");
   addColumn(database, "calls", "llm_price_usd", "REAL");
 
+  // Twilio's own call id, out of metadata.phone_call.call_sid. ElevenLabs
+  // dials through OUR Twilio number, so Twilio bills us for the minutes on top
+  // of what ElevenLabs bills for the call. This is the key that lets the real
+  // charge be fetched back from Twilio afterwards.
+  addColumn(database, "calls", "twilio_call_sid", "TEXT");
+  addColumn(database, "calls", "twilio_price", "REAL");
+  addColumn(database, "calls", "twilio_price_unit", "TEXT");
+  addColumn(database, "calls", "twilio_price_fetched_at", "INTEGER");
+
+  // ElevenLabs' own billable-minute figure for the call
+  // (charging.platform_usage.category_usage.voice.quantity). Slightly under
+  // wall-clock duration, and it is what the included-minutes pool is drawn
+  // against — so pool accounting uses this, not duration_secs / 60.
+  addColumn(database, "calls", "platform_minutes", "REAL");
+
+  // Rows written before Twilio prices were reconciled per SID.
+  addColumn(database, "sms_sends", "price", "REAL");
+  addColumn(database, "sms_sends", "price_unit", "TEXT");
+  addColumn(database, "sms_sends", "price_fetched_at", "INTEGER");
+  // Superseded by the three above. It held a rate typed into .env, which is
+  // exactly the thing this table stopped doing — a stale guess that renders as
+  // if it were a real charge.
+  dropColumn(database, "sms_sends", "cost_usd");
+
   // Google's place_id is the stable dedup key — the same business survives a
   // rename or a number change. Partial index so the many rows with no
   // place_id (pasted/CSV leads) don't collide with each other on NULL.
@@ -284,6 +421,19 @@ function migrate(database: DatabaseSync) {
 
   backfillDoNotContact(database);
   backfillCallCosts(database);
+}
+
+/**
+ * Drop a column only if it's still there, so a database created after the
+ * column was removed and one migrated from before it converge on the same
+ * shape. SQLite has supported DROP COLUMN since 3.35.
+ */
+function dropColumn(database: DatabaseSync, table: string, column: string) {
+  const columns = database.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{
+    name: string;
+  }>;
+  if (!columns.some((c) => c.name === column)) return;
+  database.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
 }
 
 /** Add a column only if it isn't there yet. SQLite has no ADD COLUMN IF NOT EXISTS. */
@@ -312,14 +462,22 @@ function addColumn(database: DatabaseSync, table: string, column: string, defini
 function backfillCallCosts(database: DatabaseSync) {
   const rows = database
     .prepare(
-      `SELECT id, raw_json FROM calls WHERE cost_fiat_usd IS NULL AND raw_json IS NOT NULL`,
+      `SELECT id, raw_json FROM calls
+        WHERE raw_json IS NOT NULL
+          AND (cost_fiat_usd IS NULL OR platform_minutes IS NULL OR twilio_call_sid IS NULL)`,
     )
     .all() as unknown as Array<{ id: number; raw_json: string }>;
 
   if (rows.length === 0) return;
 
   const update = database.prepare(
-    `UPDATE calls SET cost_fiat_usd = ?, platform_price_usd = ?, llm_price_usd = ? WHERE id = ?`,
+    `UPDATE calls
+        SET cost_fiat_usd    = COALESCE(?, cost_fiat_usd),
+            platform_price_usd = COALESCE(?, platform_price_usd),
+            llm_price_usd    = COALESCE(?, llm_price_usd),
+            platform_minutes = COALESCE(?, platform_minutes),
+            twilio_call_sid  = COALESCE(?, twilio_call_sid)
+      WHERE id = ?`,
   );
 
   let filled = 0;
@@ -332,9 +490,18 @@ function backfillCallCosts(database: DatabaseSync) {
     }
 
     const fiat = extractCallCost(metadata);
-    if (fiat.costFiatUsd === null) continue;
+    if (fiat.costFiatUsd === null && fiat.platformMinutes === null && !fiat.twilioCallSid) {
+      continue;
+    }
 
-    update.run(fiat.costFiatUsd, fiat.platformPriceUsd, fiat.llmPriceUsd, row.id);
+    update.run(
+      fiat.costFiatUsd,
+      fiat.platformPriceUsd,
+      fiat.llmPriceUsd,
+      fiat.platformMinutes,
+      fiat.twilioCallSid,
+      row.id,
+    );
     filled++;
   }
 

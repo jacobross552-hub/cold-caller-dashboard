@@ -12,6 +12,19 @@
   --bad-soft: #fbeaea;
   --good: #1f5f4a;
   --radius: 8px;
+
+  /* Chart tokens — validated against this file's own surfaces with the
+     dataviz skill's palette validator before use. Revenue/cost are the
+     categorical slots 1 (blue) and 2 (orange); the funnel ramp is the
+     ordinal sequential-blue steps. Kept separate from --accent/--good/--bad
+     so a chart series is never confused with a status badge. */
+  --series-revenue: #2a78d6;
+  --series-cost: #eb6834;
+  --funnel-1: #86b6ef;
+  --funnel-2: #5598e7;
+  --funnel-3: #2a78d6;
+  --funnel-4: #1c5cab;
+  --chart-grid: #e1e0d9;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -28,6 +41,14 @@
     --bad: #e88a8a;
     --bad-soft: #3a1f1f;
     --good: #63c9a4;
+
+    --series-revenue: #3987e5;
+    --series-cost: #d95926;
+    --funnel-1: #86b6ef;
+    --funnel-2: #5598e7;
+    --funnel-3: #2a78d6;
+    --funnel-4: #1c5cab;
+    --chart-grid: #2c2c2a;
   }
 }
 

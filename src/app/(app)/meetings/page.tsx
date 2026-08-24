@@ -14,12 +14,17 @@ import { findBookedEvent } from "@/lib/calendar-event";
 import type { TranscriptTurn } from "@/lib/outcomes";
 import { Brief } from "@/components/Brief";
 import { LeadFacts } from "@/components/LeadFacts";
+import { DealBadge } from "@/components/DealOutcome";
+import { getDealsByCallIds } from "@/lib/deals";
+import { getDemoAgentsByCallIds, launchDemoUrl } from "@/lib/demo-agent";
 
 export const dynamic = "force-dynamic";
 
 export default async function MeetingsPage() {
   const booked = listBookedCalls();
   const features = featureStatus();
+  const deals = getDealsByCallIds(booked.map((call) => call.id));
+  const demoAgents = getDemoAgentsByCallIds(booked.map((call) => call.id));
 
   return (
     <>
@@ -54,7 +59,12 @@ export default async function MeetingsPage() {
 
           return (
             <div className="panel" key={call.id}>
-              <h2 style={{ marginBottom: 4 }}>{call.business_name ?? "Unknown business"}</h2>
+              <h2 style={{ marginBottom: 4 }}>
+                {call.business_name ?? "Unknown business"}{" "}
+                <span style={{ fontSize: 13 }}>
+                  <DealBadge deal={deals.get(call.id) ?? null} />
+                </span>
+              </h2>
               <p className="small muted" style={{ marginTop: 0 }}>
                 {booking?.day ? (
                   <>
@@ -71,6 +81,39 @@ export default async function MeetingsPage() {
                 {booking?.email && <> · {booking.email}</>} · called{" "}
                 {call.started_at ? formatSydney(call.started_at) : "at an unknown time"}
               </p>
+
+              {(() => {
+                const demoAgent = demoAgents.get(call.id);
+                if (demoAgent?.status === "ready" && demoAgent.elevenlabs_agent_id) {
+                  return (
+                    <p style={{ margin: "0 0 12px" }}>
+                      <a
+                        href={launchDemoUrl(demoAgent.elevenlabs_agent_id)}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        style={{ fontWeight: 600 }}
+                      >
+                        Launch demo →
+                      </a>
+                    </p>
+                  );
+                }
+                if (demoAgent?.status === "provisioning") {
+                  return (
+                    <p className="small muted" style={{ margin: "0 0 12px" }}>
+                      Demo agent building…
+                    </p>
+                  );
+                }
+                if (demoAgent?.status === "failed") {
+                  return (
+                    <p className="small" style={{ margin: "0 0 12px", color: "var(--bad)" }}>
+                      Demo agent failed to build — open the call to retry.
+                    </p>
+                  );
+                }
+                return null;
+              })()}
 
               {event?.meetLink && (
                 <p style={{ margin: "0 0 12px" }}>

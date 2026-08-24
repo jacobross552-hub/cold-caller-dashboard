@@ -23,6 +23,8 @@ import {
 } from "./calling-hours";
 import { cancelBatch, getBatch, submitBatch, type BatchRecipient } from "./elevenlabs";
 import { leadFinderTick } from "./lead-finder/orchestrator";
+import { reconcileTwilioPrices } from "./twilio-reconcile";
+import { weeklyLearningTick } from "./learning";
 
 export interface RunRow {
   id: number;
@@ -491,6 +493,14 @@ export function startScheduler() {
       console.error("[scheduler]", err);
     });
 
+    // Same heartbeat collects Twilio's prices, which aren't available when a
+    // call ends and have to be fetched back by SID afterwards. Fire-and-forget:
+    // a pricing lookup must never delay or break the dialling loop.
+    reconcileTwilioPrices().catch((err) => {
+      logEvent("scheduler.error", "Twilio price reconciliation failed", String(err));
+      console.error("[scheduler:twilio]", err);
+    });
+
     // Same heartbeat drives the lead finder's recovery pass. It only acts on a
     // run that has stalled — a healthy run is left alone.
     try {
@@ -499,6 +509,14 @@ export function startScheduler() {
       logEvent("scheduler.error", "Lead-finder tick failed", String(err));
       console.error("[scheduler:lead-finder]", err);
     }
+
+    // Same heartbeat checks whether it's time for the weekly auto-learning
+    // run (Monday 6am Sydney). The function itself is a near-instant no-op
+    // outside that window, so checking every minute costs nothing.
+    weeklyLearningTick().catch((err) => {
+      logEvent("scheduler.error", "Weekly learning tick failed", String(err));
+      console.error("[scheduler:learning]", err);
+    });
   }, 60_000);
 
   // Kick once shortly after boot so a queued run doesn't wait a full minute.

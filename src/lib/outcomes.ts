@@ -25,6 +25,13 @@ export const OUTCOME_LABELS: Record<Outcome, string> = {
   failed: "Failed",
 };
 
+/**
+ * Outcomes where a real person picked up and engaged, even briefly — the
+ * "answered" stage of the answered → booked → bought funnel. Voicemail is an
+ * answering machine, not a person; no_answer and failed never connected at all.
+ */
+export const ANSWERED_OUTCOMES: Outcome[] = ["hung_up_early", "connected", "completed"];
+
 export const OUTCOME_EXPLANATIONS: Record<Outcome, string> = {
   voicemail:
     "Hit an answering machine. Per the script the agent says nothing and ends the call, so these cost seconds, not minutes.",

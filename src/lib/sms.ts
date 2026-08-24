@@ -7,7 +7,6 @@
 
 import { optional } from "./env";
 import { db, logEvent } from "./db";
-import { smsUnitCostUsd } from "./costs";
 
 export function smsConfigured(): boolean {
   return Boolean(
@@ -50,12 +49,13 @@ export async function sendAlertSms(
       return { sent: false, detail: `Twilio rejected the message: ${text.slice(0, 200)}` };
     }
 
-    // Record the send so lifetime SMS spend is summed from real sends rather
-    // than guessed from the number of bookings. Twilio does not return a
-    // settled price at send time — `price` is null until billing catches up —
-    // so the row carries our configured rate and the SID, which is what would
-    // let the real prices be reconciled later. The costs page labels this
-    // line "rated", not "measured", for exactly that reason.
+    // Record the send, keyed on Twilio's message SID.
+    //
+    // No price is written here on purpose: Twilio does not populate
+    // Message.price at send time, so anything we wrote now would be a guess
+    // wearing the costume of a charge. src/lib/twilio-reconcile.ts fetches the
+    // real figure back by SID a minute or two later. Until then the row is
+    // PENDING, not free.
     let sid: string | null = null;
     let segments = 1;
     try {
@@ -70,17 +70,10 @@ export async function sendAlertSms(
 
     db()
       .prepare(
-        `INSERT INTO sms_sends (call_id, purpose, provider_sid, segments, cost_usd, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO sms_sends (call_id, purpose, provider_sid, segments, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
       )
-      .run(
-        context.callId ?? null,
-        context.purpose ?? "booking_alert",
-        sid,
-        segments,
-        segments * smsUnitCostUsd(),
-        Date.now(),
-      );
+      .run(context.callId ?? null, context.purpose ?? "booking_alert", sid, segments, Date.now());
 
     logEvent("sms.sent", `Booking alert texted to ${to}`);
     return { sent: true, detail: `Texted ${to}.` };

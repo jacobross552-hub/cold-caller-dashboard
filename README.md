@@ -7,8 +7,21 @@ Runs and monitors the Jacob cold-calling agent without going into ElevenLabs.
 - Import leads by hand too (paste, CSV, or a JSON API endpoint)
 - Start a calling run — calls only go out inside legal Australian calling hours
 - A call log with plain-English summaries and the full transcript
-- Booked meetings flagged, each with a pre-call briefing
+- Booked meetings flagged, each with a pre-call briefing and a price
+  recommendation from the live pricing table
 - A text to your mobile the moment a meeting books
+- **Demo outcomes** — record Won/Lost (and why) once a booked meeting's demo
+  call has happened, with the actual agreed price on a Won
+- **A demo agent, auto-built** — the moment a meeting books, a disposable
+  ElevenLabs agent gets researched and provisioned so it's ready to show off
+  by the time the demo call happens; torn down once the outcome is recorded
+- **Conversion** — answered → booked → bought, every rate shown with the raw
+  count behind it
+- **Finance** — weekly revenue/cost/profit, a reinvestment calculator, and
+  read-only Stripe reconciliation against what was actually agreed
+- **Weekly auto-learning** — reads the week's calls, deals, and finances, and
+  proposes script/pricing/targeting changes; script changes show an exact
+  diff, auto-apply on Accept, and one-click revert
 - **What it all costs** — lifetime spend broken down by source, with what's
   measured, what's estimated from a rate you set, and what isn't counted yet
 
@@ -313,8 +326,9 @@ Fix: stop both, `rm -rf .next`, start again.
 
 ## What this deliberately doesn't do
 
-- **It doesn't manage clients you've sold to.** That's phase two. The database
-  is structured so it can be added without a rewrite.
+- **It doesn't manage clients you've sold to.** It records that a meeting was
+  Won or Lost and what was agreed — that's it. Onboarding, ongoing delivery,
+  and anything past the sale itself is still phase two.
 - **It doesn't change the agent.** The script, prompt and voice stay in
   ElevenLabs. This dashboard reads and dials; it never edits the agent.
 - **It doesn't store call audio**, matching the "transcripts only" decision in
@@ -335,18 +349,29 @@ page are not equally trustworthy and the page never blends them silently:
 | Label | What it means |
 |---|---|
 | **Measured** | Summed from per-event figures the provider itself reported, one row per event, with the price that applied stored alongside. Auditable months later; unaffected by a later price change. |
-| **Rated** | The usage is real and recorded — texts actually sent, minutes actually talked — but the price is a rate from your `.env`, not a figure anyone billed you. |
-| **Configured** | A flat monthly subscription the dashboard cannot see. Whatever you typed in, times the months the system has been running. |
+| **Rated** | The usage is real and recorded, but the price is a rate — either read live from the provider's own pricing API (Twilio number rental), or a monthly figure you typed into `.env` divided out. |
+| **Included** | Real metered usage covered by an allowance you've already paid for (e.g. voice minutes inside the ElevenLabs plan's pool). Costs nothing extra — never added to cash, shown so the pool's value is visible. |
+| **Configured** | A flat monthly subscription the dashboard cannot see. Whatever you typed in (or its default), times the months the system has been running. |
 
-Anything that can't be measured and hasn't been configured shows as **"not
-set"**, not as `$0`, and the lifetime total is labelled a floor rather than a
-total until you fill the gaps in. A missing number and a genuinely free line
-item are different things.
+Anything that can't be measured, isn't covered by an allowance, and hasn't
+been configured shows as **"not set"**, not as `$0`, and the lifetime total is
+flagged incomplete until the gaps are filled in. A missing number and a
+genuinely free line item are different things — Railway's hosting line, for
+instance, defaults to a real `$0` (one-time trial credit, no card on file),
+which is not the same as "not set".
 
 ### What's measured
 
 - **ElevenLabs** — split into voice/telephony and the agent's own LLM, both in
-  real dollars, straight from each call's post-call webhook.
+  real dollars, straight from each call's post-call webhook. Voice minutes
+  inside the included pool show their metered value but are excluded from
+  cash; only overage beyond the pool counts as spend.
+- **Twilio** — actual settled charges, fetched back per call/message SID after
+  the fact (`Call.price`/`Message.price` aren't populated until the call or
+  send completes), reconciled automatically on the 1-minute scheduler
+  heartbeat. Number rental is read live from Twilio's own Pricing API for this
+  account (`current_price`, by number type) rather than a typed rate, since an
+  AU mobile number rents at a different price than a local one.
 - **Google Places** — from the per-call ledger the lead finder already keeps,
   at the exchange rate that applied on the day of the run.
 - **ABN Lookup** — free, but the call count is logged so it's auditable.
@@ -362,26 +387,19 @@ item are different things.
 > the webhook payload already stored on each row — nothing is fetched and
 > nothing is estimated.
 
-### What you have to tell it
+### What you can override
 
-Four things the dashboard has no visibility into. Until they're set, they're
-excluded from the total and the page says so:
+The dashboard has real defaults for both subscriptions, read off the actual
+billing pages — you only need to touch these if your own numbers differ:
 
-| Variable | What it's for |
-|---|---|
-| `TWILIO_SMS_COST_USD` | Per SMS segment. |
-| `TWILIO_CALL_COST_USD_PER_MIN` | **Per outbound call minute — the big one.** |
-| `ELEVENLABS_PLAN_MONTHLY_AUD` | Your ElevenLabs plan fee. |
-| `RAILWAY_MONTHLY_AUD` | Hosting. |
-
-Read the two Twilio figures off your own console rather than a public rate
-card — AU pricing is account- and destination-specific.
-
-> **Twilio bills you twice over, and it's easy to miss.** ElevenLabs dials
-> through *your* Twilio number, so Twilio charges for the call minutes on top
-> of what ElevenLabs charges for the call. At 20 calls/day that's noise. At the
-> current cap of 250 it is not: roughly 650 minutes a day. That spend is
-> invisible to the dashboard until `TWILIO_CALL_COST_USD_PER_MIN` is set.
+| Variable | Default | What it's for |
+|---|---|---|
+| `ELEVENLABS_PLAN_MONTHLY_USD` | `24.20` | Your ElevenLabs plan fee (Creator: $22 + 10% GST), in USD — converted to AUD at display time only, never stored converted. |
+| `ELEVENLABS_INCLUDED_MINUTES_PER_MONTH` | `275` | The plan's included voice-minute pool. |
+| `ELEVENLABS_OVERAGE_USD_PER_MIN` | `0.08` | Rate once the pool's exceeded. |
+| `ELEVENLABS_INCLUDED_LLM_USD_PER_MONTH` | unset | The plan clearly includes *some* LLM allowance, but the console doesn't state a figure and the invoice shows $0 overage — so agent-LLM usage stays "Included" (not cash) until you learn the real number and set this. |
+| `RAILWAY_MONTHLY_USD` | `0` | Hosting. Genuinely zero today — a one-time trial credit, no card on file, no recurring fee. |
+| `TWILIO_NUMBER_COUNTRY` / `TWILIO_NUMBER_TYPE` | `AU` / `mobile` | Which Pricing-API rate to read for the number-rental line. |
 
 There are also **two separate LLM bills**, which the page keeps as separate
 lines: the voice agent's own model is billed by ElevenLabs, while the
@@ -398,6 +416,7 @@ change them there — rows already written keep the cost they were priced at.
 npm run test:costs
 ```
 
-41 cases, most of them about the honesty rules rather than the arithmetic:
-that credits are never read as money, that an unpriced line stays unpriced
-instead of becoming zero, and that a total which omits something says so.
+42 cases, most of them about the honesty rules rather than the arithmetic:
+that credits are never read as money, that pool-included usage never counts
+as cash, that an unpriced line stays unpriced instead of becoming zero, and
+that a total which omits something says so.

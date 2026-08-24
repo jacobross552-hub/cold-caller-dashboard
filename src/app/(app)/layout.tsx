@@ -12,6 +12,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <Link href="/leads">Leads</Link>
           <Link href="/calls">Call log</Link>
           <Link href="/meetings">Meetings</Link>
+          <Link href="/conversion">Conversion</Link>
+          <Link href="/finance">Finance</Link>
+          <Link href="/learning">Learning</Link>
           <Link href="/costs">Costs</Link>
         </nav>
         <form action="/api/auth/logout" method="post">

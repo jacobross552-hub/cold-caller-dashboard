@@ -6,10 +6,12 @@
  * The thing under test is not really the arithmetic — it's the honesty rules.
  * A costs page that quietly invents a figure is worse than no costs page, so
  * most of what's checked here is that unpriced things stay unpriced, that
- * credits are never mistaken for money, and that a total which omits something
- * says so.
+ * credits are never mistaken for money, that pool-included usage never counts
+ * as cash, and that a total which omits something says so.
  *
- * No API key, no network, no spend. Uses its own scratch database.
+ * No API key, no network, no spend. Uses its own scratch database. Twilio is
+ * left unconfigured throughout (no TWILIO_ACCOUNT_SID/AUTH_TOKEN), so the
+ * number-rental line never attempts a live API call.
  */
 
 import { rmSync } from "node:fs";
@@ -21,11 +23,13 @@ const SCRATCH = resolve(process.cwd(), ".test-build", `costs-test-${process.pid}
 process.env.DATABASE_PATH = SCRATCH;
 process.env.USD_AUD_RATE = "1.55";
 // Start with every configurable rate UNSET, so the default state under test is
-// the one that must refuse to guess.
-delete process.env.TWILIO_SMS_COST_USD;
-delete process.env.TWILIO_CALL_COST_USD_PER_MIN;
-delete process.env.ELEVENLABS_PLAN_MONTHLY_AUD;
-delete process.env.RAILWAY_MONTHLY_AUD;
+// the current real defaults (plan fee priced, hosting a real zero) rather than
+// anything typed in.
+delete process.env.ELEVENLABS_PLAN_MONTHLY_USD;
+delete process.env.ELEVENLABS_INCLUDED_LLM_USD_PER_MONTH;
+delete process.env.RAILWAY_MONTHLY_USD;
+delete process.env.TWILIO_ACCOUNT_SID;
+delete process.env.TWILIO_AUTH_TOKEN;
 delete process.env.COSTS_SINCE;
 
 const { db } = require("../src/lib/db") as typeof import("../src/lib/db");
@@ -78,7 +82,7 @@ function fakePayload(creditCost: number, platform: number, llm: number) {
   };
 }
 
-function main() {
+async function main() {
   const database = db();
 
   console.log("\n1. Credits are never mistaken for money\n");
@@ -159,24 +163,33 @@ function main() {
     0,
   );
 
-  console.log("\n3. An empty system costs nothing and admits what it can't see\n");
+  console.log("\n3. Defaults price the real subscription, even with zero activity\n");
 
-  const empty0 = costs.lifetimeCosts();
-  equal("nothing measured yet", empty0.totalAud, 0);
-  check("but the total is flagged incomplete", empty0.incomplete);
-  equal("Twilio SMS is unpriced, not zero", line(empty0, "twilio_sms").aud, null);
-  equal("Twilio call minutes are unpriced, not zero", line(empty0, "twilio_voice").aud, null);
-  equal("hosting is unpriced, not zero", line(empty0, "railway").aud, null);
+  const empty0 = await costs.lifetimeCosts();
+  // The ElevenLabs plan fee is a real bill you pay whether you dial or not —
+  // it must price from its default, not sit at "not set".
+  close("the ElevenLabs plan fee prices from its default", line(empty0, "elevenlabs_plan").aud!, 24.2 * 1.55, 0.05);
+  // Railway's default is a genuine configured zero (one-time trial credit, no
+  // card on file) — distinct from "we don't know", which would render as null.
+  equal("hosting defaults to a real configured zero, not unset", line(empty0, "railway").aud, 0);
+  equal("Twilio call minutes are unpriced with no calls, not free", line(empty0, "twilio_voice").aud, null);
+  equal("Twilio SMS is unpriced with no sends, not free", line(empty0, "twilio_sms").aud, null);
+  equal(
+    "Twilio number rental is unpriced without Twilio credentials",
+    line(empty0, "twilio_number").aud,
+    null,
+  );
+  check("the total is flagged incomplete because the Twilio lines are unpriced", empty0.incomplete);
   check(
-    "every unpriced line says what to set",
-    empty0.lines.filter((l) => l.aud === null).every((l) => (l.missing ?? "").length > 10),
+    "the agent's own LLM usage is pool-included, not cash, until the allowance is known",
+    line(empty0, "elevenlabs_llm").excludedFromTotal === true && line(empty0, "elevenlabs_llm").aud === null,
   );
   check(
     "the ABN line is a genuine zero, not a missing one",
     line(empty0, "abn_lookup").aud === 0 && !line(empty0, "abn_lookup").missing,
   );
 
-  console.log("\n4. Measured spend adds up\n");
+  console.log("\n4. Real call costs feed the pool and stay separate from cash spend\n");
 
   const now = Date.now();
   const insertCall = database.prepare(
@@ -186,16 +199,29 @@ function main() {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
-  // Three calls, the same shape as the real ones already in production.
+  // Three short calls, well inside the 275-minute included pool.
   insertCall.run("conv_a", "A Plumbing", "+61400000001", now, 157, "completed", 2092, 1, now, 0.3786, 0.2071, 0.1715);
   insertCall.run("conv_b", "B Electrical", "+61400000002", now, 155, "completed", 2281, 0, now, 0.4133, 0.2063, 0.207);
   insertCall.run("conv_c", "C Roofing", "+61400000003", now, 167, "completed", 2555, 0, now, 0.4633, 0.2216, 0.2417);
 
-  const withCalls = costs.lifetimeCosts();
-  // (0.2071 + 0.2063 + 0.2216) * 1.55
-  close("voice spend converted to AUD", line(withCalls, "elevenlabs_platform").aud!, 0.99, 0.02);
-  // (0.1715 + 0.207 + 0.2417) * 1.55
-  close("agent LLM spend converted to AUD", line(withCalls, "elevenlabs_llm").aud!, 0.96, 0.02);
+  const withCalls = await costs.lifetimeCosts();
+  close(
+    "under 8 minutes of calls stays inside the 275-minute pool, so no overage bills",
+    line(withCalls, "elevenlabs_voice").aud!,
+    0,
+    0.01,
+  );
+  close(
+    "the pool's metered value is still visible on its own line",
+    line(withCalls, "elevenlabs_voice_pool").native!.amount,
+    0.2071 + 0.2063 + 0.2216,
+    0.005,
+  );
+  check("pool value never counts as cash", line(withCalls, "elevenlabs_voice_pool").aud === null);
+  check(
+    "the total only grew by the (unchanged) plan fee, not by in-pool minutes",
+    Math.abs(withCalls.totalAud - empty0.totalAud) < 0.02,
+  );
 
   database
     .prepare(
@@ -205,77 +231,71 @@ function main() {
     )
     .run(null, "call_analysis", "claude-opus-5", 20_000, 2_000, 0, 0, 0.15, now);
 
-  const withAi = costs.lifetimeCosts();
-  close("dashboard model spend appears", line(withAi, "anthropic").aud!, 0.15 * 1.55, 0.01);
+  const withAi = await costs.lifetimeCosts();
+  close("the dashboard's own Anthropic spend appears as cash", line(withAi, "anthropic").aud!, 0.15 * 1.55, 0.01);
   check(
-    "the two LLM bills are separate lines",
+    "the two LLM bills stay separate — dashboard summaries vs the agent's own model",
     line(withAi, "anthropic").aud !== line(withAi, "elevenlabs_llm").aud,
   );
 
-  console.log("\n5. Rated lines stay unpriced until a rate is set\n");
+  console.log("\n5. The agent's own LLM usage becomes real cash once the allowance is known\n");
+
+  process.env.ELEVENLABS_INCLUDED_LLM_USD_PER_MONTH = "50";
+  const withLlmKnown = await costs.lifetimeCosts();
+  close(
+    "metered LLM value converts to AUD once it's no longer assumed included",
+    line(withLlmKnown, "elevenlabs_llm").aud!,
+    (0.1715 + 0.207 + 0.2417) * 1.55,
+    0.02,
+  );
+  equal("provenance flips from included to measured", line(withLlmKnown, "elevenlabs_llm").provenance, "measured");
+  delete process.env.ELEVENLABS_INCLUDED_LLM_USD_PER_MONTH;
+
+  console.log("\n6. Twilio actuals price real settled charges, never a typed rate\n");
+
+  database
+    .prepare(`UPDATE calls SET twilio_call_sid = ?, twilio_price = ?, twilio_price_unit = ? WHERE conversation_id = ?`)
+    .run("CA_fake_sid", 0.15, "USD", "conv_a");
 
   database
     .prepare(
-      `INSERT INTO sms_sends (call_id, purpose, provider_sid, segments, cost_usd, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO sms_sends (call_id, purpose, provider_sid, segments, price, price_unit, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(null, "booking_alert", "SM_fake_sid", 2, 0, now);
+    .run(null, "booking_alert", "SM_fake_sid", 2, 0.1, "USD", now);
 
-  const stillUnset = costs.lifetimeCosts();
-  equal("a real send with no rate is still unpriced", line(stillUnset, "twilio_sms").aud, null);
-  check(
-    "but the send is counted in the basis",
-    line(stillUnset, "twilio_sms").basis.includes("1 text"),
-  );
+  const withTwilio = await costs.lifetimeCosts();
+  close("a settled Twilio call price converts to AUD", line(withTwilio, "twilio_voice").aud!, 0.15 * 1.55, 0.01);
+  close("a settled Twilio SMS price converts to AUD", line(withTwilio, "twilio_sms").aud!, 0.1 * 1.55, 0.01);
+  equal("a real charge is labelled measured, not rated", line(withTwilio, "twilio_voice").provenance, "measured");
 
-  // Now set the rates and confirm the same recorded usage becomes a figure.
-  process.env.TWILIO_SMS_COST_USD = "0.05";
-  process.env.TWILIO_CALL_COST_USD_PER_MIN = "0.03";
+  console.log("\n7. Subscriptions price from their defaults, or an override when set\n");
 
-  const rated = costs.lifetimeCosts();
-  close("2 segments at 5c, in AUD", line(rated, "twilio_sms").aud!, 2 * 0.05 * 1.55, 0.005);
-  // 479 seconds of calls = 7.983 minutes at 3c.
-  close("call minutes priced from real duration", line(rated, "twilio_voice").aud!, (479 / 60) * 0.03 * 1.55, 0.02);
-  check("both are labelled rated, not measured", line(rated, "twilio_sms").provenance === "rated");
-
-  console.log("\n6. Subscriptions are prorated and clearly configured\n");
-
-  process.env.ELEVENLABS_PLAN_MONTHLY_AUD = "33";
-  process.env.RAILWAY_MONTHLY_AUD = "8";
-
-  const full = costs.lifetimeCosts();
+  process.env.RAILWAY_MONTHLY_USD = "8";
+  const full = await costs.lifetimeCosts();
   const months = full.monthsLive;
   check("months running is at least 1", months >= 1);
-  close("plan fee is monthly x months", line(full, "elevenlabs_plan").aud!, 33 * months, 0.01);
-  close("hosting is monthly x months", line(full, "railway").aud!, 8 * months, 0.01);
+  close("plan fee is monthly x months at its default", line(full, "elevenlabs_plan").aud!, 24.2 * months * 1.55, 0.05);
+  close("hosting is monthly x months at the override", line(full, "railway").aud!, 8 * months * 1.55, 0.02);
   equal("subscriptions are labelled configured", line(full, "railway").provenance, "configured");
-
-  check("with every rate set, the total is no longer a floor", !full.incomplete);
   check(
-    "the total is the sum of the priced lines",
+    "the total is the sum of the priced, non-pool-excluded lines",
     Math.abs(
-      full.totalAud - full.lines.reduce((sum, l) => sum + (l.aud ?? 0), 0),
+      full.totalAud - full.lines.filter((l) => !l.excludedFromTotal).reduce((sum, l) => sum + (l.aud ?? 0), 0),
     ) < 0.02,
   );
+  check(
+    "the total is still flagged incomplete — the number rental is still unpriced",
+    full.incomplete,
+  );
 
-  console.log("\n7. Unit economics\n");
+  console.log("\n8. Unit economics\n");
 
   const units = costs.unitCosts(full);
   equal("three calls counted", units.calls, 3);
   equal("one booking counted", units.bookings, 1);
   close("cost per call is the total over three", units.perCallAud!, full.totalAud / 3, 0.01);
   close("cost per booking is the total over one", units.perBookingAud!, full.totalAud, 0.01);
-
-  console.log("\n8. A total never silently includes a guess\n");
-
-  // Drop one rate back out and confirm the page returns to "floor" mode.
-  delete process.env.RAILWAY_MONTHLY_AUD;
-  const regressed = costs.lifetimeCosts();
-  check("removing a rate makes the total incomplete again", regressed.incomplete);
-  check(
-    "and the total drops by exactly the removed line",
-    Math.abs(full.totalAud - regressed.totalAud - 8 * months) < 0.02,
-  );
 
   // --- Cleanup -------------------------------------------------------------
   for (const suffix of ["", "-wal", "-shm"]) {
@@ -291,4 +311,7 @@ function main() {
   process.exitCode = failed > 0 ? 1 : 0;
 }
 
-main();
+main().catch((err) => {
+  console.error("\nCosts test crashed:", err);
+  process.exit(1);
+});

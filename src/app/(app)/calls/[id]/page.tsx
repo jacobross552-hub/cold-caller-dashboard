@@ -6,7 +6,11 @@ import { formatAuPhone } from "@/lib/phone";
 import { OUTCOME_EXPLANATIONS, OUTCOME_LABELS, spokenTurns, type Outcome } from "@/lib/outcomes";
 import { Brief } from "@/components/Brief";
 import { LeadFacts } from "@/components/LeadFacts";
+import { DealOutcome } from "@/components/DealOutcome";
+import { DemoAgentPanel } from "@/components/DemoAgentPanel";
 import { getLead } from "@/lib/leads";
+import { getDeal } from "@/lib/deals";
+import { getDemoAgent } from "@/lib/demo-agent";
 
 export const dynamic = "force-dynamic";
 
@@ -61,6 +65,12 @@ export default async function CallDetailPage({ params }: { params: Promise<{ id:
           </div>
         )}
       </div>
+
+      {call.booked === 1 && <DemoAgentPanel callId={call.id} demoAgent={getDemoAgent(call.id)} />}
+
+      {call.booked === 1 && (
+        <DealOutcome callId={call.id} deal={getDeal(call.id)} recommended={brief?.quoteCheck.expected ?? null} />
+      )}
 
       <LeadFacts lead={getLead(call.lead_id)} />
 

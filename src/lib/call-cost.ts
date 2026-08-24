@@ -26,6 +26,19 @@ export interface CallFiatCost {
   costFiatUsd: number | null;
   platformPriceUsd: number | null;
   llmPriceUsd: number | null;
+  /**
+   * ElevenLabs' own billable-minute count for the call. This is what the
+   * plan's included-minutes pool is drawn against, and it runs slightly under
+   * wall-clock duration — so pool accounting must use this rather than
+   * duration_secs / 60.
+   */
+  platformMinutes: number | null;
+  /**
+   * Twilio's id for the same call. ElevenLabs dials through our own Twilio
+   * number, so Twilio bills the minutes separately; this is what lets the real
+   * charge be fetched back afterwards.
+   */
+  twilioCallSid: string | null;
 }
 
 /**
@@ -39,14 +52,23 @@ export function extractCallCost(
   const num = (v: unknown): number | null =>
     typeof v === "number" && Number.isFinite(v) ? v : null;
 
-  const charging =
-    metadata && typeof metadata.charging === "object" && metadata.charging !== null
-      ? (metadata.charging as Record<string, unknown>)
-      : null;
+  const obj = (v: unknown): Record<string, unknown> | null =>
+    typeof v === "object" && v !== null ? (v as Record<string, unknown>) : null;
+
+  const charging = obj(metadata?.charging);
 
   const platform = num(charging?.platform_price);
   const llm = num(charging?.llm_price);
   const total = num(metadata?.cost_fiat);
+
+  // charging.platform_usage.category_usage.voice.quantity — nested four deep
+  // in someone else's payload, so every level is guarded.
+  const platformUsage = obj(charging?.platform_usage);
+  const categoryUsage = obj(platformUsage?.category_usage);
+  const voice = obj(categoryUsage?.voice);
+
+  const phoneCall = obj(metadata?.phone_call);
+  const sid = typeof phoneCall?.call_sid === "string" ? phoneCall.call_sid : null;
 
   return {
     // Prefer what ElevenLabs called the total; fall back to the two halves so
@@ -54,5 +76,7 @@ export function extractCallCost(
     costFiatUsd: total ?? (platform !== null || llm !== null ? (platform ?? 0) + (llm ?? 0) : null),
     platformPriceUsd: platform,
     llmPriceUsd: llm,
+    platformMinutes: num(voice?.quantity),
+    twilioCallSid: sid,
   };
 }

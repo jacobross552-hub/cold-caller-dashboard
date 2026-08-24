@@ -15,7 +15,8 @@ import { sendAlertSms } from "./sms";
 import { buildBookingSms, findBookedEvent } from "./calendar-event";
 import { suppress } from "./suppression";
 import { checkQuoteAgainstTable, formatMoney, type QuoteCheck } from "./pricing";
-import { extractCallCost, priceAnthropicUsage, smsUnitCostUsd } from "./costs";
+import { provisionDemoAgent } from "./demo-agent";
+import { extractCallCost, priceAnthropicUsage } from "./costs";
 import {
   analyseCall,
   refineOutcome,
@@ -49,6 +50,14 @@ export interface CallRow {
   platform_price_usd: number | null;
   /** The agent's-own-LLM half of cost_fiat_usd, USD. Billed by ElevenLabs. */
   llm_price_usd: number | null;
+  /** ElevenLabs' billable minutes — what the included pool is drawn against. */
+  platform_minutes: number | null;
+  /** Twilio's id for the same call, so its separate charge can be fetched. */
+  twilio_call_sid: string | null;
+  /** What Twilio actually charged for the minutes. Null = not settled yet. */
+  twilio_price: number | null;
+  twilio_price_unit: string | null;
+  twilio_price_fetched_at: number | null;
   booked: number;
   transcript_json: string | null;
   raw_json: string | null;
@@ -136,8 +145,9 @@ export function recordCall(data: WebhookCallData): { callId: number; outcome: Ou
          conversation_id, lead_id, run_id, business_name, phone, started_at,
          duration_secs, outcome, termination_reason, cost, booked,
          transcript_json, raw_json, created_at,
-         cost_fiat_usd, platform_price_usd, llm_price_usd
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         cost_fiat_usd, platform_price_usd, llm_price_usd,
+         platform_minutes, twilio_call_sid
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(conversation_id) DO UPDATE SET
          lead_id            = COALESCE(excluded.lead_id, calls.lead_id),
          run_id             = COALESCE(excluded.run_id, calls.run_id),
@@ -153,7 +163,9 @@ export function recordCall(data: WebhookCallData): { callId: number; outcome: Ou
          raw_json           = excluded.raw_json,
          cost_fiat_usd      = excluded.cost_fiat_usd,
          platform_price_usd = excluded.platform_price_usd,
-         llm_price_usd      = excluded.llm_price_usd`,
+         llm_price_usd      = excluded.llm_price_usd,
+         platform_minutes   = excluded.platform_minutes,
+         twilio_call_sid    = COALESCE(excluded.twilio_call_sid, calls.twilio_call_sid)`,
     )
     .run(
       data.conversation_id,
@@ -174,6 +186,8 @@ export function recordCall(data: WebhookCallData): { callId: number; outcome: Ou
       fiat.costFiatUsd,
       fiat.platformPriceUsd,
       fiat.llmPriceUsd,
+      fiat.platformMinutes,
+      fiat.twilioCallSid,
     );
 
   const row = database
@@ -312,7 +326,18 @@ export async function analyseAndStore(callId: number): Promise<void> {
       });
     }
 
-    if (booked) await alertOnBooking(callId);
+    if (booked) {
+      await alertOnBooking(callId);
+      // Fire-and-forget: research + ElevenLabs provisioning can take a few
+      // seconds, and a slow demo build must never hold up the webhook
+      // response or the booking alert. A same-day booking can still land on
+      // the meetings page before this finishes — see getDemoAgent's
+      // "provisioning" status, which the UI shows as in-progress rather than
+      // blocking or looking broken.
+      void provisionDemoAgent(callId).catch((err) =>
+        logEvent("demo_agent.failed", `Unhandled error provisioning demo agent for call ${callId}`, String(err)),
+      );
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     database

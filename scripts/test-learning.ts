@@ -136,7 +136,7 @@ async function main() {
   })) as typeof elevenlabs.getAgentConfig;
 
   const synthCalls: Array<{ currentPrompt: string; priorRejections: unknown[] }> = [];
-  synthesis.synthesizeProposals = (async (stats: unknown, currentPrompt: string, priorRejections: unknown[]) => {
+  const trackingStub = (async (stats: unknown, currentPrompt: string, priorRejections: unknown[]) => {
     synthCalls.push({ currentPrompt, priorRejections });
     return {
       proposals: [
@@ -169,6 +169,7 @@ async function main() {
       usage: { model: "claude-opus-5", inputTokens: 1000, outputTokens: 200 },
     };
   }) as typeof synthesis.synthesizeProposals;
+  synthesis.synthesizeProposals = trackingStub;
 
   const run1 = await learning.runWeeklyLearning(now);
   check("run completed", run1?.status === "completed", run1?.error ?? "");
@@ -187,6 +188,34 @@ async function main() {
     | undefined;
   check("the synthesis call was logged to the cost ledger, same as any other Anthropic spend", Boolean(aiUsageRow));
   equal("token counts recorded as reported", aiUsageRow?.input_tokens, 1000);
+
+  console.log("\n4b. At most one script proposal survives per run, even if the model returns more\n");
+
+  synthesis.synthesizeProposals = (async () => ({
+    proposals: [
+      { category: "script" as const, title: "First script change", reasoning: "r1", confidence: "c1", sample_size: 10, new_prompt_text: "PROMPT A" },
+      { category: "script" as const, title: "Second script change", reasoning: "r2", confidence: "c2", sample_size: 10, new_prompt_text: "PROMPT B" },
+      { category: "other" as const, title: "An other one", reasoning: "r3", confidence: "c3", sample_size: 10, new_prompt_text: null },
+    ],
+    overallNotes: "",
+    usage: { model: "claude-opus-5", inputTokens: 500, outputTokens: 100 },
+  })) as typeof synthesis.synthesizeProposals;
+
+  const multiScriptWeekEnd = now - 27 * 86_400_000; // a week window not used anywhere else in this file
+  const run4 = await learning.runWeeklyLearning(multiScriptWeekEnd);
+  check("run completed", run4?.status === "completed", run4?.error ?? "");
+
+  const run4Proposals = database.prepare("SELECT category FROM learning_proposals WHERE run_id = ?").all(run4!.id) as Array<{
+    category: string;
+  }>;
+  equal(
+    "only one script proposal kept even though the model returned two",
+    run4Proposals.filter((p) => p.category === "script").length,
+    1,
+  );
+  equal("the non-script proposal is untouched by the script cap", run4Proposals.filter((p) => p.category === "other").length, 1);
+
+  synthesis.synthesizeProposals = trackingStub; // restore — later sections depend on synthCalls tracking
 
   console.log("\n5. runWeeklyLearning is idempotent for the same week\n");
 

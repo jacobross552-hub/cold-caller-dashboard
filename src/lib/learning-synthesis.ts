@@ -101,7 +101,9 @@ RULES
 - For category="script": new_prompt_text must be the ENTIRE current prompt with your change applied — not a
   snippet, not an instruction to change it, the complete text. Never invent content not supported by the stats;
   a wording change should trace to a specific pattern in the data (e.g. an objection that recurs, a stage where
-  calls consistently die).
+  calls consistently die). Propose AT MOST ONE category="script" proposal per run — each one costs a full copy
+  of a ~19,500-character prompt to write out, so if several wording issues stand out, pick the single most
+  impactful one rather than proposing several.
 - Do not propose anything from the REJECTED PROPOSALS list below again unless you have genuinely new evidence —
   if you do, say explicitly what's new and different this time.
 - If nothing in the data supports a change, return an empty proposals array. A quiet week with no proposals is
@@ -128,6 +130,17 @@ export interface SynthesisResult {
   usage: { model: string; inputTokens: number; outputTokens: number };
 }
 
+/**
+ * Generous on purpose. A category="script" proposal has to carry a COMPLETE
+ * copy of the live prompt in new_prompt_text — at ~19,500 characters that's
+ * roughly 5,000+ output tokens for ONE proposal before a word of reasoning or
+ * a second proposal is written. 8,000 was tried first and truncated mid-JSON
+ * on a real run (an "unterminated string" parse error at the tail of the
+ * response — the classic signature of hitting max_tokens mid-string). This
+ * headroom, plus capping script proposals to one per run below, is the fix.
+ */
+const MAX_OUTPUT_TOKENS = 32_000;
+
 export async function synthesizeProposals(
   stats: WeeklyStats,
   currentPrompt: string,
@@ -135,11 +148,17 @@ export async function synthesizeProposals(
 ): Promise<SynthesisResult> {
   const response = await anthropic().messages.parse({
     model: config.anthropicModel,
-    max_tokens: 8000,
+    max_tokens: MAX_OUTPUT_TOKENS,
     system: synthesisSystemPrompt(currentPrompt, priorRejections),
     output_config: { effort: "medium", format: zodOutputFormat(SynthesisSchema) },
     messages: [{ role: "user", content: `THIS WEEK'S AGGREGATED STATS\n${statsSummaryForPrompt(stats)}` }],
   });
+
+  if (response.stop_reason === "max_tokens") {
+    throw new Error(
+      `Synthesis response was cut off at the ${MAX_OUTPUT_TOKENS}-token limit before finishing — likely too many proposals or an oversized script rewrite in one run. Not applying anything from a truncated response.`,
+    );
+  }
 
   const parsed = response.parsed_output;
   if (!parsed) throw new Error("Synthesis returned no structured output.");

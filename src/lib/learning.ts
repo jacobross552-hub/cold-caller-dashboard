@@ -322,7 +322,21 @@ export async function runWeeklyLearning(windowEnd: number = Date.now()): Promise
     // a rule stated only to the model can be missed. Lives here rather than
     // inside synthesizeProposals so it applies no matter what the model
     // returns, and so it's independently testable from the LLM call itself.
-    const proposals = rawProposals.filter((p) => p.category !== "pricing" || (p.sample_size ?? 0) >= MIN_PRICING_SAMPLE);
+    const priced = rawProposals.filter((p) => p.category !== "pricing" || (p.sample_size ?? 0) >= MIN_PRICING_SAMPLE);
+
+    // Second backstop: at most one script proposal survives even if the
+    // model returns more than one despite the prompt instruction — each one
+    // costs a full copy of the live prompt to generate, which is exactly
+    // what caused a real truncated-JSON failure before MAX_OUTPUT_TOKENS was
+    // raised. Keep the first, drop the rest, rather than trusting the model
+    // to have honoured the "at most one" rule.
+    let keptScriptOne = false;
+    const proposals = priced.filter((p) => {
+      if (p.category !== "script") return true;
+      if (keptScriptOne) return false;
+      keptScriptOne = true;
+      return true;
+    });
 
     // Same rule as calls.ts's per-call analysis: every Anthropic call this
     // app makes gets logged here, or the dashboard's own spend goes invisible

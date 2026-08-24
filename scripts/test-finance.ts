@@ -171,6 +171,38 @@ async function main() {
   check("windows are chronological, oldest first", series[0].windowStart < series[3].windowStart);
   check("the last window ends now-ish", Math.abs(series[3].windowEnd - Date.now()) < 5000);
 
+  console.log("\n9. COSTS_SINCE clamps every window — nothing earlier ever shows\n");
+
+  // A cutoff 10 days ago: "this week" (last 7 days) is entirely after it, so
+  // it should be untouched, but a 6-week series reaches back ~42 days and
+  // must be clamped hard at the cutoff.
+  const cutoffMs = Date.now() - 10 * 24 * 60 * 60 * 1000;
+  const cutoffDateString = new Date(cutoffMs).toISOString().slice(0, 10);
+  process.env.COSTS_SINCE = cutoffDateString;
+  // COSTS_SINCE is a date-only string, parsed as UTC midnight — this is the
+  // ACTUAL cutoff finance.ts computes, not the raw cutoffMs above (which
+  // carries a time-of-day that midnight can sit up to ~24h behind).
+  const actualCutoffMs = Date.parse(cutoffDateString);
+
+  const clampedWeek = await finance.thisWeek();
+  check("a window entirely after the cutoff is unaffected", clampedWeek.windowStart > actualCutoffMs - 1000);
+
+  const clampedSeries = await finance.financeSeries(6);
+  check(
+    "every window's start is at or after the cutoff — nothing earlier ever appears",
+    clampedSeries.every((w) => w.windowStart >= actualCutoffMs - 1000),
+  );
+  check(
+    "weeks that would have fallen entirely before the cutoff are dropped, not shown as empty",
+    clampedSeries.length < 6,
+  );
+  check(
+    "the earliest remaining week starts exactly at the cutoff, not the nominal 7-days-back date",
+    Math.abs(clampedSeries[0].windowStart - actualCutoffMs) < 1000,
+  );
+
+  delete process.env.COSTS_SINCE;
+
   console.log(`\n${passed} passed, ${failed} failed\n`);
 
   try {

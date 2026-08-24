@@ -11,7 +11,7 @@
  */
 
 import { db } from "./db";
-import { config } from "./env";
+import { config, optional } from "./env";
 import { plan as subscriptionPlan, railwayMonthlyUsd } from "./costs";
 import { money } from "./lead-finder/cost";
 import { listWonDeals, type DealRow } from "./deals";
@@ -20,6 +20,20 @@ import { conversionFunnel, type ConversionFunnel } from "./funnel";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DAYS_PER_MONTH = 30.44;
+
+/**
+ * Same env var costs.ts already uses to override "running since" — reused
+ * rather than adding a second, near-duplicate date knob. Setting it also
+ * moves the /costs page's "months running" figure, which is the same
+ * underlying fact (when the operation actually started), not a side effect
+ * to work around.
+ */
+function financeSinceCutoff(): number | null {
+  const raw = optional("COSTS_SINCE");
+  if (!raw) return null;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 
 export type RevenueProvenance = "measured" | "recorded";
 
@@ -120,15 +134,21 @@ async function measuredRevenueInWindow(start: number, end: number): Promise<numb
 
 /** Revenue minus cost for an arbitrary window. Used both for "this week" and for the history series. */
 export async function windowFinance(start: number, end: number): Promise<WindowFinance> {
-  const days = (end - start) / MS_PER_DAY;
-  const cost = measuredCostInWindow(start, end) + proratedSubscriptionCostInWindow(days);
+  // Never look earlier than COSTS_SINCE — a window whose nominal start
+  // predates it gets clamped to it, so the earliest reported window is
+  // shorter rather than reaching back into pre-launch test data.
+  const cutoff = financeSinceCutoff();
+  const clampedStart = cutoff !== null ? Math.max(start, cutoff) : start;
 
-  const measured = await measuredRevenueInWindow(start, end);
-  const revenueAud = measured ?? recordedRevenueInWindow(start, end);
+  const days = (end - clampedStart) / MS_PER_DAY;
+  const cost = measuredCostInWindow(clampedStart, end) + proratedSubscriptionCostInWindow(days);
+
+  const measured = await measuredRevenueInWindow(clampedStart, end);
+  const revenueAud = measured ?? recordedRevenueInWindow(clampedStart, end);
   const revenueProvenance: RevenueProvenance = measured !== null ? "measured" : "recorded";
 
   return {
-    windowStart: start,
+    windowStart: clampedStart,
     windowEnd: end,
     revenueAud,
     revenueProvenance,
@@ -155,14 +175,20 @@ export interface WeekPoint extends WindowFinance {
 /** The last `weeks` rolling 7-day windows, oldest first, for the history graph. */
 export async function financeSeries(weeks = 12): Promise<WeekPoint[]> {
   const end = Date.now();
+  const cutoff = financeSinceCutoff();
   const points: WeekPoint[] = [];
   for (let i = weeks - 1; i >= 0; i--) {
     const windowEnd = end - i * 7 * MS_PER_DAY;
     const windowStart = windowEnd - 7 * MS_PER_DAY;
+    // A week that ends before the cutoff didn't happen yet, business-wise —
+    // skip it rather than showing a bar for a week before things started.
+    if (cutoff !== null && windowEnd <= cutoff) continue;
     const w = await windowFinance(windowStart, windowEnd);
     points.push({
       ...w,
-      label: new Date(windowStart).toLocaleDateString("en-AU", { day: "numeric", month: "short" }),
+      // Labelled from w.windowStart (post-clamp), so the boundary week reads
+      // as starting on the cutoff date rather than a nominal earlier one.
+      label: new Date(w.windowStart).toLocaleDateString("en-AU", { day: "numeric", month: "short" }),
     });
   }
   return points;

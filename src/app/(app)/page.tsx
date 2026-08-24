@@ -6,9 +6,10 @@ import Link from "next/link";
 import { checkCallingWindow, formatSydney, holidayDataStale, COVERED_THROUGH } from "@/lib/calling-hours";
 import { activeRun, dispatchedToday, listRuns, runProgress } from "@/lib/dispatcher";
 import { leadCounts } from "@/lib/leads";
-import { callStats } from "@/lib/calls";
+import { callStats, getCall } from "@/lib/calls";
 import { recentEvents } from "@/lib/db";
 import { config, featureStatus } from "@/lib/env";
+import { getPhoneClaim } from "@/lib/demo-agent";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +28,8 @@ export default async function CallingPage({
   const features = featureStatus();
   const events = recentEvents(15);
   const runs = listRuns(8);
+  const phoneClaim = getPhoneClaim();
+  const claimedCall = phoneClaim ? getCall(phoneClaim.callId) : null;
 
   return (
     <>
@@ -60,6 +63,16 @@ export default async function CallingPage({
           </>
         )}
       </div>
+
+      {phoneClaim && (
+        <div className="notice warn">
+          <strong>Your cold-calling number is currently pointed at a demo agent</strong>
+          {claimedCall?.business_name && <> ({claimedCall.business_name})</>} — real prospect callbacks will
+          reach the demo, not Jacob, until it&apos;s released.{" "}
+          <Link href={`/calls/${phoneClaim.callId}`}>Open that call to release it</Link>. Auto-reverts after 2
+          hours if left alone.
+        </div>
+      )}
 
       {holidayDataStale() && (
         <div className="notice warn">

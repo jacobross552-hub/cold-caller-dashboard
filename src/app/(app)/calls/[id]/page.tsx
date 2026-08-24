@@ -10,7 +10,8 @@ import { DealOutcome } from "@/components/DealOutcome";
 import { DemoAgentPanel } from "@/components/DemoAgentPanel";
 import { getLead } from "@/lib/leads";
 import { getDeal } from "@/lib/deals";
-import { getDemoAgent } from "@/lib/demo-agent";
+import { getDemoAgent, getPhoneClaim } from "@/lib/demo-agent";
+import { optional } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
@@ -66,7 +67,17 @@ export default async function CallDetailPage({ params }: { params: Promise<{ id:
         )}
       </div>
 
-      {call.booked === 1 && <DemoAgentPanel callId={call.id} demoAgent={getDemoAgent(call.id)} />}
+      {call.booked === 1 && (
+        <DemoAgentPanel
+          callId={call.id}
+          demoAgent={getDemoAgent(call.id)}
+          phoneClaim={getPhoneClaim()}
+          phoneNumberDisplay={(() => {
+            const raw = optional("TWILIO_FROM_NUMBER");
+            return raw ? formatAuPhone(raw) : null;
+          })()}
+        />
+      )}
 
       {call.booked === 1 && (
         <DealOutcome callId={call.id} deal={getDeal(call.id)} recommended={brief?.quoteCheck.expected ?? null} />

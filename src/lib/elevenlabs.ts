@@ -174,6 +174,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// --- Phone number → agent assignment (repointing for a callable demo) ------
+//
+// Verified against a real round trip on the live number before this was
+// built on: PATCH /v1/convai/phone-numbers/{id} with { agent_id } governs
+// INBOUND routing only — who answers when someone dials the number. It does
+// NOT affect outbound dialling, which always names its agent explicitly (see
+// submitBatch above), so cold-calling keeps working unaffected while the
+// number is pointed at a demo agent for inbound.
+
+/** Repoint a phone number's inbound routing to a different agent. */
+export async function assignPhoneNumberAgent(phoneNumberId: string, agentId: string): Promise<void> {
+  await call(`/convai/phone-numbers/${encodeURIComponent(phoneNumberId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ agent_id: agentId }),
+  });
+}
+
 /** Read-only: pulls just the live prompt text out of a fetched config, for diffing against a proposal. */
 export function currentPromptText(agentConfig: Record<string, unknown>): string {
   const cc = agentConfig["conversation_config"];

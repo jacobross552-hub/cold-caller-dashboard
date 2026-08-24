@@ -307,6 +307,22 @@ function migrate(database: DatabaseSync) {
     CREATE INDEX IF NOT EXISTS idx_demo_agents_status ON demo_agents(status);
 
     /*
+     * Singleton — which demo agent, if any, currently has the shared cold-
+     * calling number's INBOUND routing pointed at it (Bob's explicit choice:
+     * reuse the one number rather than pay for a dedicated demo number,
+     * knowing it means a real prospect calling back during the claim window
+     * reaches the demo agent instead of Jacob). id=1 always; claiming a
+     * different demo overwrites this row rather than needing a separate
+     * release step — a phone number can only point at one agent at a time,
+     * so the old claim is implicitly gone the moment a new one is made.
+     */
+    CREATE TABLE IF NOT EXISTS phone_claim (
+      id         INTEGER PRIMARY KEY CHECK (id = 1),
+      call_id    INTEGER NOT NULL REFERENCES demo_agents(call_id) ON DELETE CASCADE,
+      claimed_at INTEGER NOT NULL
+    );
+
+    /*
      * Weekly auto-learning (Segment 6). One row per run of the job — fires
      * once a week (see dispatcher.ts's weeklyLearningTick). week_start is
      * UNIQUE so the once-a-minute scheduler heartbeat landing inside the

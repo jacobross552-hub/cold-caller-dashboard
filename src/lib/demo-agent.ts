@@ -11,18 +11,24 @@
  * SCOPE, STATED PLAINLY: the demo agent talks the receptionist role — answers
  * questions, takes messages, offers appointment times — but carries no real
  * calendar or SMS tools. It's a disposable conversation demo, not a working
- * integration; wiring real tools is exactly the "always rebuild fresh" work
- * that happens on Won (see provisionProductionAgent below), not something to
- * half-build here and reuse.
+ * integration. Bob confirmed on Won this stops at tearing down the demo —
+ * no auto-provisioned production agent — same as Lost, since a real client
+ * build needs a real number and tool wiring this deliberately doesn't do.
  *
  * Disposable by design: torn down after Segment 2 records an outcome, Won or
  * Lost either way (see teardownDemoAgent, called from the outcome API route).
+ *
+ * Optionally phone-callable: Bob's explicit choice to reuse the existing
+ * cold-calling number rather than pay for a dedicated one, accepting the
+ * tradeoff that a real prospect calling back while claimed reaches the demo
+ * agent instead of Jacob. See claimPhoneForDemo/releasePhoneClaim below.
  */
 
 import { db, logEvent } from "./db";
-import { createAgent, deleteAgent } from "./elevenlabs";
+import { createAgent, deleteAgent, assignPhoneNumberAgent } from "./elevenlabs";
 import { gatherResearch, type DemoResearch } from "./demo-research";
 import { getLead, type LeadRow } from "./leads";
+import { required } from "./env";
 import type { CallAnalysis } from "./brief";
 
 export type DemoAgentStatus = "provisioning" | "ready" | "failed" | "torn_down";
@@ -191,6 +197,23 @@ export async function teardownDemoAgent(callId: number, reason: "won" | "lost"):
   const row = getDemoAgent(callId);
   if (!row || row.status === "torn_down") return;
 
+  // Must happen BEFORE deleting the agent — leaving the phone number pointed
+  // at an agent that's about to stop existing would break inbound calls to
+  // the shared cold-calling number entirely, not just misroute them. Same
+  // "log and proceed" contract as the delete below: recording the outcome
+  // must never be blocked by an ElevenLabs-side failure.
+  const claim = getPhoneClaim();
+  if (claim && claim.callId === callId) {
+    try {
+      await releasePhoneClaim();
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      logEvent("demo_agent.phone_release_failed", `Couldn't release the phone claim for call ${callId}: ${detail}`, {
+        callId,
+      });
+    }
+  }
+
   if (row.elevenlabs_agent_id) {
     try {
       await deleteAgent(row.elevenlabs_agent_id);
@@ -209,4 +232,86 @@ export async function teardownDemoAgent(callId: number, reason: "won" | "lost"):
     .run(Date.now(), reason, callId);
 
   logEvent("demo_agent.torn_down", `Demo agent for call ${callId} torn down (${reason}).`, { callId });
+}
+
+/* ---------------------------------------------------------------------------
+ * Phone-callable demos — repointing the shared cold-calling number
+ * ------------------------------------------------------------------------ */
+
+export interface PhoneClaim {
+  callId: number;
+  claimedAt: number;
+}
+
+/** Auto-released if left claimed this long — the safety net for "Bob forgot to switch it back". */
+export const PHONE_CLAIM_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+
+export function getPhoneClaim(): PhoneClaim | null {
+  const row = db().prepare("SELECT call_id, claimed_at FROM phone_claim WHERE id = 1").get() as
+    | { call_id: number; claimed_at: number }
+    | undefined;
+  return row ? { callId: row.call_id, claimedAt: row.claimed_at } : null;
+}
+
+/**
+ * Point the shared cold-calling number's inbound routing at this demo agent.
+ * Claiming a different demo simply overwrites this — a number can only point
+ * at one agent at a time, so the previous claim is implicitly gone the
+ * instant a new one succeeds; there's nothing separate to release on
+ * ElevenLabs' side first.
+ */
+export async function claimPhoneForDemo(callId: number): Promise<void> {
+  const row = getDemoAgent(callId);
+  if (!row || row.status !== "ready" || !row.elevenlabs_agent_id) {
+    throw new Error("This demo agent isn't ready yet — nothing to point the number at.");
+  }
+
+  const phoneNumberId = required("ELEVENLABS_PHONE_NUMBER_ID");
+  await assignPhoneNumberAgent(phoneNumberId, row.elevenlabs_agent_id);
+
+  db()
+    .prepare(
+      `INSERT INTO phone_claim (id, call_id, claimed_at) VALUES (1, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET call_id = excluded.call_id, claimed_at = excluded.claimed_at`,
+    )
+    .run(callId, Date.now());
+
+  logEvent(
+    "demo_agent.phone_claimed",
+    `Cold-calling number repointed to the demo agent for call ${callId} (${row.elevenlabs_agent_id}). Real inbound calls will reach it until released.`,
+    { callId },
+  );
+}
+
+/** Point the number back at the real cold-calling agent. Safe to call when nothing is claimed. */
+export async function releasePhoneClaim(): Promise<void> {
+  const claim = getPhoneClaim();
+  if (!claim) return;
+
+  const phoneNumberId = required("ELEVENLABS_PHONE_NUMBER_ID");
+  const jacobAgentId = required("ELEVENLABS_AGENT_ID");
+  await assignPhoneNumberAgent(phoneNumberId, jacobAgentId);
+
+  db().prepare("DELETE FROM phone_claim WHERE id = 1").run();
+
+  logEvent("demo_agent.phone_released", `Cold-calling number pointed back to Jacob (was claimed by call ${claim.callId}).`, {
+    callId: claim.callId,
+  });
+}
+
+/**
+ * Called from dispatcher.ts's one-minute heartbeat. Auto-releases a claim
+ * that's been held past PHONE_CLAIM_TIMEOUT_MS — the safety net for a demo
+ * that was never explicitly released, so the real callback number doesn't
+ * stay pointed at a demo agent indefinitely by accident.
+ */
+export async function phoneClaimTick(): Promise<void> {
+  const claim = getPhoneClaim();
+  if (!claim) return;
+  if (Date.now() - claim.claimedAt < PHONE_CLAIM_TIMEOUT_MS) return;
+
+  logEvent("demo_agent.phone_claim_timed_out", `Auto-releasing the phone claim from call ${claim.callId} after ${PHONE_CLAIM_TIMEOUT_MS / 3_600_000}h.`, {
+    callId: claim.callId,
+  });
+  await releasePhoneClaim();
 }

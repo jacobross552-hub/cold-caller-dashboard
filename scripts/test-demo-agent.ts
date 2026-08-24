@@ -17,6 +17,8 @@ const SCRATCH = resolve(process.cwd(), ".test-build", `demo-agent-test-${process
 
 process.env.DATABASE_PATH = SCRATCH;
 process.env.ELEVENLABS_API_KEY = "test-key";
+process.env.ELEVENLABS_AGENT_ID = "agent_jacob_real";
+process.env.ELEVENLABS_PHONE_NUMBER_ID = "phnum_shared";
 
 const { db } = require("../src/lib/db") as typeof import("../src/lib/db");
 const elevenlabs = require("../src/lib/elevenlabs") as typeof import("../src/lib/elevenlabs");
@@ -222,6 +224,101 @@ async function main() {
   const call3 = database.prepare("SELECT id FROM calls WHERE conversation_id = ?").get("conv_demo_3") as { id: number };
   await demoAgent.teardownDemoAgent(call3.id, "lost"); // must not throw
   check("still no demo agent row", demoAgent.getDemoAgent(call3.id) === null);
+
+  console.log("\n12. Phone-callable demos — claiming, releasing, overwriting\n");
+
+  const assignCalls: Array<{ phoneNumberId: string; agentId: string }> = [];
+  elevenlabs.assignPhoneNumberAgent = (async (phoneNumberId: string, agentId: string) => {
+    assignCalls.push({ phoneNumberId, agentId });
+  }) as typeof elevenlabs.assignPhoneNumberAgent;
+
+  async function readyDemoFor(conversationId: string, agentId: string) {
+    database.prepare(`INSERT INTO calls (conversation_id, booked, created_at) VALUES (?, 1, ?)`).run(conversationId, Date.now());
+    const call = database.prepare("SELECT id FROM calls WHERE conversation_id = ?").get(conversationId) as { id: number };
+    elevenlabs.createAgent = (async () => ({ agent_id: agentId, main_branch_id: "branch_x" })) as typeof elevenlabs.createAgent;
+    await demoAgent.provisionDemoAgent(call.id);
+    return call.id;
+  }
+
+  const call4 = await readyDemoFor("conv_demo_4", "agent_demo_4");
+
+  check("nothing claimed yet", demoAgent.getPhoneClaim() === null);
+  await demoAgent.claimPhoneForDemo(call4);
+  equal("assignPhoneNumberAgent called with the shared number and this demo's agent", assignCalls, [
+    { phoneNumberId: "phnum_shared", agentId: "agent_demo_4" },
+  ]);
+  const claim1 = demoAgent.getPhoneClaim();
+  equal("claim recorded against call4", claim1?.callId, call4);
+
+  console.log("\n13. Claiming a different demo overwrites — a number can only point at one agent\n");
+
+  const call5 = await readyDemoFor("conv_demo_5", "agent_demo_5");
+  await demoAgent.claimPhoneForDemo(call5);
+  equal("the API was told to point at the new demo's agent", assignCalls[assignCalls.length - 1], {
+    phoneNumberId: "phnum_shared",
+    agentId: "agent_demo_5",
+  });
+  equal("the claim now belongs to call5, not call4", demoAgent.getPhoneClaim()?.callId, call5);
+
+  console.log("\n14. releasePhoneClaim points back to Jacob, and is a no-op when nothing's claimed\n");
+
+  const beforeRelease = assignCalls.length;
+  await demoAgent.releasePhoneClaim();
+  equal("assignPhoneNumberAgent called with the shared number and Jacob's real agent id", assignCalls[assignCalls.length - 1], {
+    phoneNumberId: "phnum_shared",
+    agentId: "agent_jacob_real",
+  });
+  check("claim cleared", demoAgent.getPhoneClaim() === null);
+  check("exactly one call made for the release", assignCalls.length === beforeRelease + 1);
+
+  await demoAgent.releasePhoneClaim(); // nothing claimed now
+  equal("no API call made when nothing was claimed", assignCalls.length, beforeRelease + 1);
+
+  console.log("\n15. claimPhoneForDemo refuses a demo that isn't ready\n");
+
+  database.prepare(`INSERT INTO calls (conversation_id, booked, created_at) VALUES (?, 1, ?)`).run("conv_demo_6", Date.now());
+  const call6 = database.prepare("SELECT id FROM calls WHERE conversation_id = ?").get("conv_demo_6") as { id: number };
+  let threwNotReady = false;
+  try {
+    await demoAgent.claimPhoneForDemo(call6.id); // no demo agent exists at all for this call
+  } catch {
+    threwNotReady = true;
+  }
+  check("throws rather than silently pointing the number at nothing", threwNotReady);
+
+  console.log("\n16. phoneClaimTick auto-releases only once the timeout has actually passed\n");
+
+  await demoAgent.claimPhoneForDemo(call4);
+  check("claimed again for call4", demoAgent.getPhoneClaim()?.callId === call4);
+
+  await demoAgent.phoneClaimTick();
+  check("still claimed — nowhere near the timeout yet", demoAgent.getPhoneClaim()?.callId === call4);
+
+  // Backdate the claim past the timeout and try again.
+  database
+    .prepare("UPDATE phone_claim SET claimed_at = ? WHERE id = 1")
+    .run(Date.now() - demoAgent.PHONE_CLAIM_TIMEOUT_MS - 1000);
+  await demoAgent.phoneClaimTick();
+  check("auto-released once the claim is older than PHONE_CLAIM_TIMEOUT_MS", demoAgent.getPhoneClaim() === null);
+
+  console.log("\n17. teardownDemoAgent releases the claim BEFORE deleting the agent, if this call holds it\n");
+
+  await demoAgent.claimPhoneForDemo(call5);
+  check("call5 holds the claim going into teardown", demoAgent.getPhoneClaim()?.callId === call5);
+
+  const deleteCallsBefore: string[] = [];
+  elevenlabs.deleteAgent = (async (agentId: string) => {
+    deleteCallsBefore.push(agentId);
+  }) as typeof elevenlabs.deleteAgent;
+
+  await demoAgent.teardownDemoAgent(call5, "lost");
+  check("the claim was released as part of teardown", demoAgent.getPhoneClaim() === null);
+  equal("the demo's own agent was still deleted", deleteCallsBefore, ["agent_demo_5"]);
+  equal(
+    "the release PATCH pointed the number back at Jacob, not left mid-teardown",
+    assignCalls[assignCalls.length - 1],
+    { phoneNumberId: "phnum_shared", agentId: "agent_jacob_real" },
+  );
 
   console.log(`\n${passed} passed, ${failed} failed\n`);
 

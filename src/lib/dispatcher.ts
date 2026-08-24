@@ -25,6 +25,7 @@ import { cancelBatch, getBatch, submitBatch, type BatchRecipient } from "./eleve
 import { leadFinderTick } from "./lead-finder/orchestrator";
 import { reconcileTwilioPrices } from "./twilio-reconcile";
 import { weeklyLearningTick } from "./learning";
+import { phoneClaimTick } from "./demo-agent";
 
 export interface RunRow {
   id: number;
@@ -516,6 +517,14 @@ export function startScheduler() {
     weeklyLearningTick().catch((err) => {
       logEvent("scheduler.error", "Weekly learning tick failed", String(err));
       console.error("[scheduler:learning]", err);
+    });
+
+    // Same heartbeat auto-releases a demo's phone claim if it's been held
+    // longer than PHONE_CLAIM_TIMEOUT_MS — the safety net for the cold-
+    // calling number being left pointed at a demo agent by accident.
+    phoneClaimTick().catch((err) => {
+      logEvent("scheduler.error", "Phone claim tick failed", String(err));
+      console.error("[scheduler:phone-claim]", err);
     });
   }, 60_000);
 

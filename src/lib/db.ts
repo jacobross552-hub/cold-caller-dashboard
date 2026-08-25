@@ -243,6 +243,14 @@ function migrate(database: DatabaseSync) {
       price            REAL,
       price_unit       TEXT,
       price_fetched_at INTEGER,
+      /*
+       * Twilio's delivery state (queued/sent/delivered/failed/undelivered/...),
+       * fetched in the SAME reconciliation pass as price — one API call
+       * already returns both, so this costs nothing extra. NULL means "not
+       * checked yet", same honesty rule as price: never assume delivered.
+       */
+      status           TEXT,
+      status_error     TEXT,
       created_at   INTEGER NOT NULL
     );
 
@@ -432,6 +440,44 @@ function migrate(database: DatabaseSync) {
   // /app/agents/agents/{agentId}?branchId={branchId}, not just the agent id
   // alone (confirmed against a real working link; the id-only URL 404s).
   addColumn(database, "demo_agents", "branch_id", "TEXT");
+
+  // Delivery status, reconciled alongside price (twilio-reconcile.ts).
+  addColumn(database, "sms_sends", "status", "TEXT");
+  addColumn(database, "sms_sends", "status_error", "TEXT");
+
+  /*
+   * Demo-meeting reminders and attendance tracking, one row per booked call.
+   *
+   * meeting_at / meet_link are captured ONCE, at booking time, from the same
+   * calendar-event parse alertOnBooking already does — so the reminder
+   * scheduler never has to re-read a transcript on every tick, just query
+   * this table by time.
+   *
+   * The two *_skipped flags are decided ONCE, at booking time, from the gap
+   * between when the booking was made and when the demo actually is (Bob's
+   * rule: don't try to send a 24h reminder for a demo booked 3 hours ago).
+   * They are NOT re-evaluated later — a reminder that was going to fire
+   * either fires or was never going to, there's no in-between state.
+   */
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS demo_bookings (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      call_id               INTEGER NOT NULL UNIQUE REFERENCES calls(id) ON DELETE CASCADE,
+      meeting_at            INTEGER NOT NULL,
+      meet_link             TEXT,
+      reminder_24h_sent_at  INTEGER,
+      reminder_24h_skipped  INTEGER NOT NULL DEFAULT 0,
+      reminder_1h_sent_at   INTEGER,
+      reminder_1h_skipped   INTEGER NOT NULL DEFAULT 0,
+      attendance            TEXT,
+      attendance_notes      TEXT,
+      attendance_marked_at  INTEGER,
+      no_show_flagged_at    INTEGER,
+      created_at            INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_demo_bookings_meeting_at ON demo_bookings(meeting_at);
+  `);
 
   // Google's place_id is the stable dedup key — the same business survives a
   // rename or a number change. Partial index so the many rows with no

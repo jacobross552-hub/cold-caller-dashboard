@@ -17,6 +17,7 @@ import { LeadFacts } from "@/components/LeadFacts";
 import { DealBadge } from "@/components/DealOutcome";
 import { getDealsByCallIds } from "@/lib/deals";
 import { getDemoAgentsByCallIds, launchDemoUrl } from "@/lib/demo-agent";
+import { getDemoBookingsByCallIds, listUnresolvedNoShows } from "@/lib/demo-booking";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +26,8 @@ export default async function MeetingsPage() {
   const features = featureStatus();
   const deals = getDealsByCallIds(booked.map((call) => call.id));
   const demoAgents = getDemoAgentsByCallIds(booked.map((call) => call.id));
+  const bookings = getDemoBookingsByCallIds(booked.map((call) => call.id));
+  const noShows = listUnresolvedNoShows();
 
   return (
     <>
@@ -32,6 +35,13 @@ export default async function MeetingsPage() {
       <p className="sub">
         Every call that ended with a demo in the calendar, and what to know before you walk into it.
       </p>
+
+      {noShows.length > 0 && (
+        <div className="notice bad" style={{ fontSize: 16, fontWeight: 700, padding: "16px 18px" }}>
+          ⚠ {noShows.length} demo{noShows.length === 1 ? "" : "s"} didn&apos;t get marked as joined — scroll
+          down to find {noShows.length === 1 ? "it" : "them"} below.
+        </div>
+      )}
 
       {!features.smsAlerts && (
         <div className="notice warn">
@@ -63,6 +73,17 @@ export default async function MeetingsPage() {
                 {call.business_name ?? "Unknown business"}{" "}
                 <span style={{ fontSize: 13 }}>
                   <DealBadge deal={deals.get(call.id) ?? null} />
+                  {(() => {
+                    const booking = bookings.get(call.id);
+                    if (!booking) return null;
+                    if (booking.no_show_flagged_at && !booking.attendance) {
+                      return <span className="badge bad"> ⚠ NO-SHOW</span>;
+                    }
+                    if (booking.attendance) {
+                      return <span className="badge good"> {booking.attendance.replace(/_/g, " ")}</span>;
+                    }
+                    return null;
+                  })()}
                 </span>
               </h2>
               <p className="small muted" style={{ marginTop: 0 }}>

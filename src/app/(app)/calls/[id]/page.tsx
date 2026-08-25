@@ -8,9 +8,11 @@ import { Brief } from "@/components/Brief";
 import { LeadFacts } from "@/components/LeadFacts";
 import { DealOutcome } from "@/components/DealOutcome";
 import { DemoAgentPanel } from "@/components/DemoAgentPanel";
+import { DemoBookingPanel } from "@/components/DemoBookingPanel";
 import { getLead } from "@/lib/leads";
 import { getDeal } from "@/lib/deals";
 import { getDemoAgent, getPhoneClaim } from "@/lib/demo-agent";
+import { getDemoBooking, listSmsForCall } from "@/lib/demo-booking";
 import { optional } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
@@ -77,6 +79,10 @@ export default async function CallDetailPage({ params }: { params: Promise<{ id:
             return raw ? formatAuPhone(raw) : null;
           })()}
         />
+      )}
+
+      {call.booked === 1 && (
+        <DemoBookingPanel callId={call.id} booking={getDemoBooking(call.id)} smsSends={listSmsForCall(call.id)} />
       )}
 
       {call.booked === 1 && (

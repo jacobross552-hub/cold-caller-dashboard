@@ -10,6 +10,7 @@ import { callStats, getCall } from "@/lib/calls";
 import { recentEvents } from "@/lib/db";
 import { config, featureStatus } from "@/lib/env";
 import { getPhoneClaim } from "@/lib/demo-agent";
+import { listUnresolvedNoShows } from "@/lib/demo-booking";
 
 export const dynamic = "force-dynamic";
 
@@ -30,11 +31,30 @@ export default async function CallingPage({
   const runs = listRuns(8);
   const phoneClaim = getPhoneClaim();
   const claimedCall = phoneClaim ? getCall(phoneClaim.callId) : null;
+  const noShows = listUnresolvedNoShows();
 
   return (
     <>
       <h1>Calling</h1>
       <p className="sub">Queue a batch of calls. They go out only inside legal calling hours.</p>
+
+      {noShows.length > 0 && (
+        <div className="notice bad" style={{ fontSize: 16, fontWeight: 700, padding: "16px 18px" }}>
+          ⚠ {noShows.length} demo{noShows.length === 1 ? "" : "s"} didn&apos;t get marked as joined — call{" "}
+          {noShows.length === 1 ? "them" : "them"}:{" "}
+          {noShows.map((n, i) => {
+            const business = getCall(n.call_id)?.business_name ?? `call #${n.call_id}`;
+            return (
+              <span key={n.call_id}>
+                {i > 0 && ", "}
+                <Link href={`/calls/${n.call_id}`} style={{ color: "inherit", textDecoration: "underline" }}>
+                  {business}
+                </Link>
+              </span>
+            );
+          })}
+        </div>
+      )}
 
       {params.error && <div className="notice bad">{params.error}</div>}
       {params.started && (

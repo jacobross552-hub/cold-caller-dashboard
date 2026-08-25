@@ -16,6 +16,7 @@ import { buildBookingSms, findBookedEvent } from "./calendar-event";
 import { suppress } from "./suppression";
 import { checkQuoteAgainstTable, formatMoney, type QuoteCheck } from "./pricing";
 import { provisionDemoAgent } from "./demo-agent";
+import { recordDemoBooking } from "./demo-booking";
 import { extractCallCost, priceAnthropicUsage } from "./costs";
 import {
   analyseCall,
@@ -328,6 +329,10 @@ export async function analyseAndStore(callId: number): Promise<void> {
 
     if (booked) {
       await alertOnBooking(callId);
+      // Additive, alongside the alert above — captures the meeting time and
+      // backfills the agent's own confirmation text for delivery tracking.
+      // Synchronous DB work only, safe to call inline.
+      recordDemoBooking(callId);
       // Fire-and-forget: research + ElevenLabs provisioning can take a few
       // seconds, and a slow demo build must never hold up the webhook
       // response or the booking alert. A same-day booking can still land on
@@ -346,7 +351,10 @@ export async function analyseAndStore(callId: number): Promise<void> {
     logEvent("call.analysis_failed", `Couldn't summarise call ${callId}: ${message}`, { callId });
 
     // A booking still deserves a text even if the summary failed.
-    if (call.booked === 1) await alertOnBooking(callId);
+    if (call.booked === 1) {
+      await alertOnBooking(callId);
+      recordDemoBooking(callId);
+    }
   }
 }
 

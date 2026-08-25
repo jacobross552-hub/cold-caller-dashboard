@@ -26,6 +26,7 @@ import { leadFinderTick } from "./lead-finder/orchestrator";
 import { reconcileTwilioPrices } from "./twilio-reconcile";
 import { weeklyLearningTick } from "./learning";
 import { phoneClaimTick } from "./demo-agent";
+import { demoBookingTick } from "./demo-booking";
 
 export interface RunRow {
   id: number;
@@ -525,6 +526,14 @@ export function startScheduler() {
     phoneClaimTick().catch((err) => {
       logEvent("scheduler.error", "Phone claim tick failed", String(err));
       console.error("[scheduler:phone-claim]", err);
+    });
+
+    // Same heartbeat sends due demo reminders and flags no-shows — see
+    // demo-booking.ts. Independent of everything else on this tick; a
+    // failure here must never affect dialling.
+    demoBookingTick().catch((err) => {
+      logEvent("scheduler.error", "Demo booking tick failed", String(err));
+      console.error("[scheduler:demo-booking]", err);
     });
   }, 60_000);
 

@@ -190,6 +190,51 @@ export async function fetchCallPrice(callSid: string): Promise<TwilioPrice | nul
   return fetchChargedPrice("Calls", callSid, "Call price lookup");
 }
 
+/**
+ * Twilio's delivery states for an outbound message, in rough chronological
+ * order. "delivered" is the only genuinely good outcome; "failed" and
+ * "undelivered" both mean the recipient never got it (Twilio distinguishes
+ * "we couldn't even send it" from "carrier rejected it after we sent it", but
+ * neither is worth telling apart for a reminder text — both mean call them).
+ */
+export type TwilioMessageStatus =
+  | "accepted"
+  | "scheduled"
+  | "queued"
+  | "sending"
+  | "sent"
+  | "delivered"
+  | "undelivered"
+  | "failed"
+  | "canceled";
+
+export interface TwilioMessageDetails extends TwilioPrice {
+  status: TwilioMessageStatus | null;
+  errorMessage: string | null;
+}
+
+/** Same API call as fetchMessagePrice, but also reads the delivery status Twilio returns in the same response — no extra request. */
+export async function fetchMessageDetails(messageSid: string): Promise<TwilioMessageDetails | null> {
+  const accountSid = optional("TWILIO_ACCOUNT_SID");
+  if (!accountSid) return null;
+
+  const payload = await getJson(
+    `${API_BASE}/2010-04-01/Accounts/${accountSid}/Messages/${encodeURIComponent(messageSid)}.json`,
+    "Message status lookup",
+  );
+  if (!payload) return null;
+
+  const raw = asMoney(payload["price"]);
+  const status = asText(payload["status"]);
+
+  return {
+    price: raw === null ? null : Math.abs(raw),
+    priceUnit: asText(payload["price_unit"]),
+    status: (status as TwilioMessageStatus) ?? null,
+    errorMessage: asText(payload["error_message"]),
+  };
+}
+
 /** Same contract as fetchCallPrice, for an SMS message SID. */
 export async function fetchMessagePrice(messageSid: string): Promise<TwilioPrice | null> {
   return fetchChargedPrice("Messages", messageSid, "Message price lookup");

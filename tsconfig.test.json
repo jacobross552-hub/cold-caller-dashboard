@@ -41,6 +41,7 @@
     "src/lib/demo-agent.ts",
     "src/lib/learning-synthesis.ts",
     "src/lib/learning.ts",
+    "src/lib/demo-booking.ts",
     "src/lib/lead-finder/cost.ts",
     "src/lib/lead-finder/hours.ts",
     "src/lib/lead-finder/icp.ts",

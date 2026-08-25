@@ -18,7 +18,14 @@
  */
 
 import { db, logEvent } from "./db";
-import { fetchCallPrice, fetchMessagePrice, twilioConfigured } from "./twilio";
+import { fetchCallPrice, fetchMessageDetails, twilioConfigured } from "./twilio";
+
+/**
+ * Delivery states that won't change again — a message can keep moving
+ * through queued/sending/sent for a while, but once it lands on one of
+ * these, re-polling it is pointless traffic.
+ */
+const TERMINAL_STATUSES = new Set(["delivered", "undelivered", "failed", "canceled"]);
 
 /**
  * How many SIDs to chase in one pass.
@@ -57,21 +64,26 @@ export async function reconcileTwilioPrices(): Promise<ReconcileResult> {
     )
     .all(cutoff, BATCH) as unknown as Array<{ id: number; twilio_call_sid: string }>;
 
+  // Keeps polling a message until BOTH the price and a TERMINAL delivery
+  // status are known — price and status can settle at different times, so
+  // stopping the moment price arrives would leave a message stuck showing a
+  // stale "queued"/"sent" status forever if that happened to settle second.
   const pendingMessages = database
     .prepare(
-      `SELECT id, provider_sid FROM sms_sends
-        WHERE provider_sid IS NOT NULL AND price IS NULL AND created_at > ?
+      `SELECT id, provider_sid, status FROM sms_sends
+        WHERE provider_sid IS NOT NULL AND created_at > ?
+          AND (price IS NULL OR status IS NULL OR status NOT IN ('delivered','undelivered','failed','canceled'))
         ORDER BY created_at DESC LIMIT ?`,
     )
-    .all(cutoff, BATCH) as unknown as Array<{ id: number; provider_sid: string }>;
+    .all(cutoff, BATCH) as unknown as Array<{ id: number; provider_sid: string; status: string | null }>;
 
   if (pendingCalls.length === 0 && pendingMessages.length === 0) return result;
 
   // Concurrent, not serial: a batch of 25 sequential round-trips to Twilio
   // would take longer than the tick interval it runs on.
-  const [callPrices, messagePrices] = await Promise.all([
+  const [callPrices, messageDetails] = await Promise.all([
     Promise.all(pendingCalls.map((row) => fetchCallPrice(row.twilio_call_sid))),
-    Promise.all(pendingMessages.map((row) => fetchMessagePrice(row.provider_sid))),
+    Promise.all(pendingMessages.map((row) => fetchMessageDetails(row.provider_sid))),
   ]);
 
   const updateCall = database.prepare(
@@ -79,7 +91,7 @@ export async function reconcileTwilioPrices(): Promise<ReconcileResult> {
       WHERE id = ?`,
   );
   const updateMessage = database.prepare(
-    `UPDATE sms_sends SET price = ?, price_unit = ?, price_fetched_at = ? WHERE id = ?`,
+    `UPDATE sms_sends SET price = ?, price_unit = ?, price_fetched_at = ?, status = ?, status_error = ? WHERE id = ?`,
   );
 
   const now = Date.now();
@@ -98,11 +110,32 @@ export async function reconcileTwilioPrices(): Promise<ReconcileResult> {
   });
 
   pendingMessages.forEach((row, i) => {
-    const fetched = messagePrices[i];
-    if (fetched && fetched.price !== null) {
-      updateMessage.run(fetched.price, fetched.priceUnit, now, row.id);
-      result.messagesPriced++;
-    } else {
+    const fetched = messageDetails[i];
+    if (!fetched) {
+      result.stillPending++;
+      return;
+    }
+
+    const gotPrice = fetched.price !== null;
+    const gotTerminalStatus = fetched.status !== null && TERMINAL_STATUSES.has(fetched.status);
+
+    if (gotPrice || fetched.status !== null) {
+      // Safe to write unconditionally: Twilio doesn't "forget" a value once
+      // settled, so a field that's already landed keeps coming back on every
+      // later fetch too — this never overwrites a real price/status with a
+      // null from a fetch that's only still pending on the OTHER field.
+      updateMessage.run(
+        fetched.price ?? null,
+        fetched.priceUnit,
+        now,
+        fetched.status,
+        fetched.errorMessage,
+        row.id,
+      );
+      if (gotPrice) result.messagesPriced++;
+    }
+
+    if (!gotPrice || !gotTerminalStatus) {
       result.stillPending++;
     }
   });

@@ -116,28 +116,71 @@ export const SMS_PURPOSE_LABELS: Record<string, string> = {
  * ------------------------------------------------------------------------ */
 
 interface AgentSmsResult {
-  sid: string;
+  sid: string | null;
   to: string;
   body: string;
+  failed: boolean;
+  error: string | null;
 }
 
 /**
- * Every successful send_sms tool result in the transcript. There can be more
- * than one — the live script also texts a callback number on request — so
- * this returns all of them rather than assuming exactly one.
+ * Every send_sms tool call in the transcript, successful or not. There can
+ * be more than one — the live script also texts a callback number on
+ * request — so this returns all of them rather than assuming exactly one.
+ *
+ * A failed result carries no `to`/`body` of its own (Twilio never got far
+ * enough to echo them back) — those only exist on the matching tool_call
+ * turn, correlated by request_id. Without this, a rejected send (e.g. the
+ * prospect's number is a landline and can't take SMS) was silently dropped
+ * instead of surfacing as a visible failure — confirmed against a real
+ * transcript where a Twilio 21635 "cannot be a landline" error vanished
+ * with nothing recorded anywhere.
  */
 function extractAgentSmsSends(transcript: TranscriptTurn[]): AgentSmsResult[] {
+  const calls = new Map<string, { to: string; body: string }>();
+  for (const turn of transcript) {
+    const toolCalls = (turn as unknown as { tool_calls?: unknown }).tool_calls;
+    if (!Array.isArray(toolCalls)) continue;
+    for (const call of toolCalls as Array<Record<string, unknown>>) {
+      if (call?.tool_name !== "send_sms" || typeof call.request_id !== "string") continue;
+      const raw = typeof call.params_as_json === "string" ? call.params_as_json : "";
+      try {
+        const params = JSON.parse(raw) as { To?: string; Body?: string };
+        if (params.To && params.Body) calls.set(call.request_id, { to: params.To, body: params.Body });
+      } catch {
+        // Unparseable params — nothing to correlate a failure back to.
+      }
+    }
+  }
+
   const found: AgentSmsResult[] = [];
   for (const turn of transcript) {
     const results = (turn as unknown as { tool_results?: unknown }).tool_results;
     if (!Array.isArray(results)) continue;
     for (const result of results as Array<Record<string, unknown>>) {
-      if (result?.tool_name !== "send_sms" || result?.is_error === true) continue;
+      if (result?.tool_name !== "send_sms") continue;
+
+      if (result.is_error === true) {
+        const requestId = typeof result.request_id === "string" ? result.request_id : null;
+        const call = requestId ? calls.get(requestId) : undefined;
+        if (!call) continue; // can't label a failure without knowing what it was trying to send
+        const rawError = typeof result.raw_error_message === "string" ? result.raw_error_message : null;
+        const resultValue = typeof result.result_value === "string" ? result.result_value : null;
+        found.push({
+          sid: null,
+          to: call.to,
+          body: call.body,
+          failed: true,
+          error: rawError ?? resultValue ?? "Unknown error",
+        });
+        continue;
+      }
+
       const raw = typeof result.result_value === "string" ? result.result_value : "";
       try {
         const parsed = JSON.parse(raw) as { sid?: string; to?: string; body?: string };
         if (parsed.sid && parsed.to) {
-          found.push({ sid: parsed.sid, to: parsed.to, body: parsed.body ?? "" });
+          found.push({ sid: parsed.sid, to: parsed.to, body: parsed.body ?? "", failed: false, error: null });
         }
       } catch {
         // Unparseable result — nothing to backfill for this one send.
@@ -154,23 +197,32 @@ function extractAgentSmsSends(transcript: TranscriptTurn[]): AgentSmsResult[] {
  * the Meet link is labelled the confirmation; any others (e.g. a texted
  * callback number) are labelled generically — still tracked, just not the
  * one this feature was specifically asked to surface.
+ *
+ * A failed send is inserted with status='failed' and status_error set
+ * straight away, and no provider_sid — there's no Twilio message to poll
+ * for, so twilio-reconcile.ts's provider_sid IS NOT NULL check correctly
+ * leaves it alone.
  */
 function backfillAgentSms(callId: number, transcript: TranscriptTurn[]): void {
   const sends = extractAgentSmsSends(transcript);
   if (sends.length === 0) return;
 
   const insert = db().prepare(
-    `INSERT INTO sms_sends (call_id, purpose, provider_sid, segments, created_at) VALUES (?, ?, ?, 1, ?)`,
+    `INSERT INTO sms_sends (call_id, purpose, provider_sid, segments, created_at, status, status_error) VALUES (?, ?, ?, 1, ?, ?, ?)`,
   );
   const now = Date.now();
+  let failedCount = 0;
   for (const send of sends) {
     const purpose = send.body.includes("meet.google.com") ? "demo_confirmation" : "agent_sms_other";
-    insert.run(callId, purpose, send.sid, now);
+    if (send.failed) failedCount++;
+    insert.run(callId, purpose, send.sid, now, send.failed ? "failed" : null, send.failed ? send.error : null);
   }
 
   logEvent(
     "demo_booking.confirmation_backfilled",
-    `Backfilled ${sends.length} agent-sent text${sends.length === 1 ? "" : "s"} for call ${callId} into delivery tracking.`,
+    `Backfilled ${sends.length} agent-sent text${sends.length === 1 ? "" : "s"} for call ${callId} into delivery tracking` +
+      (failedCount > 0 ? ` (${failedCount} failed to send)` : "") +
+      ".",
     { callId },
   );
 }

@@ -48,7 +48,7 @@ let nextId = 0;
 function bookedTranscript(opts: {
   meetingIso: string;
   meetLink?: string;
-  smsSends?: Array<{ sid: string; to: string; body: string; isError?: boolean }>;
+  smsSends?: Array<{ sid: string; to: string; body: string; isError?: boolean; rawError?: string }>;
 }) {
   const turns: Array<Record<string, unknown>> = [
     { role: "agent", message: "Booking you in now.", tool_calls: [{ tool_name: "google_calendar_create_event", request_id: "req_1" }] },
@@ -71,18 +71,42 @@ function bookedTranscript(opts: {
     },
   ];
 
-  for (const sms of opts.smsSends ?? []) {
+  // Real transcripts split an SMS tool call across two turns — the call
+  // (with To/Body, matching a real send_sms webhook) in one, the result
+  // (matched back by request_id) in the next — same as the calendar tool
+  // above. A failed result carries no To/Body of its own; only the call does.
+  (opts.smsSends ?? []).forEach((sms, i) => {
+    const requestId = `req_sms_${i}`;
     turns.push({
       role: "agent",
-      tool_results: [
+      tool_calls: [
         {
           tool_name: "send_sms",
-          is_error: Boolean(sms.isError),
-          result_value: JSON.stringify({ sid: sms.sid, to: sms.to, body: sms.body, status: "queued" }),
+          request_id: requestId,
+          params_as_json: JSON.stringify({ To: sms.to, Body: sms.body, From: "+61480846881" }),
         },
       ],
     });
-  }
+    turns.push({
+      role: "agent",
+      tool_results: [
+        sms.isError
+          ? {
+              request_id: requestId,
+              tool_name: "send_sms",
+              is_error: true,
+              result_value: "Error code: 400. Details: HTTP 400",
+              raw_error_message: sms.rawError ?? "simulated failure",
+            }
+          : {
+              request_id: requestId,
+              tool_name: "send_sms",
+              is_error: false,
+              result_value: JSON.stringify({ sid: sms.sid, to: sms.to, body: sms.body, status: "queued" }),
+            },
+      ],
+    });
+  });
 
   return turns;
 }
@@ -164,19 +188,28 @@ async function main() {
       smsSends: [
         { sid: "SM_confirmation", to: "+61450608853", body: "Your demo is booked. Join: https://meet.google.com/abc-defg-hij" },
         { sid: "SM_callback", to: "+61450608853", body: "Here's the number to call us back on." },
-        { sid: "SM_failed", to: "+61450608853", body: "This one errored", isError: true },
+        {
+          sid: "SM_failed",
+          to: "+61351760102",
+          body: "Your demo is booked. Join: https://meet.google.com/abc-defg-hij",
+          isError: true,
+          rawError: "'To' number +61351760102 cannot be a landline",
+        },
       ],
     }),
   });
   booking.recordDemoBooking(call5);
 
   const sends = booking.listSmsForCall(call5);
-  equal("two successful sends backfilled, the errored one skipped", sends.length, 2);
+  equal("all three sends backfilled, including the failed one", sends.length, 3);
   const confirmation = sends.find((s) => s.provider_sid === "SM_confirmation");
   const other = sends.find((s) => s.provider_sid === "SM_callback");
+  const failedSend = sends.find((s) => s.status === "failed");
   equal("the meet-link text is labelled the confirmation", confirmation?.purpose, "demo_confirmation");
   equal("the other text is labelled generically", other?.purpose, "agent_sms_other");
-  check("the errored send was never backfilled", !sends.some((s) => s.provider_sid === "SM_failed"));
+  check("the failed send has no provider_sid — nothing to poll for", failedSend?.provider_sid === null);
+  equal("the failed send is still labelled the confirmation — it had the meet link", failedSend?.purpose, "demo_confirmation");
+  equal("the failed send's status_error carries the real Twilio reason", failedSend?.status_error, "'To' number +61351760102 cannot be a landline");
 
   console.log("\n7. demoBookingTick — sends a due 24h reminder, records it, doesn't double-send\n");
 

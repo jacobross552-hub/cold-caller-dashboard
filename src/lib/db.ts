@@ -479,6 +479,11 @@ function migrate(database: DatabaseSync) {
     CREATE INDEX IF NOT EXISTS idx_demo_bookings_meeting_at ON demo_bookings(meeting_at);
   `);
 
+  // Set when the dialled number can't take SMS (an AU landline) and no
+  // working alternative (mobile/email) was found on the call — the signal
+  // for "call this one back manually, don't expect them to join by link".
+  addColumn(database, "demo_bookings", "landline_only", "INTEGER NOT NULL DEFAULT 0");
+
   // Google's place_id is the stable dedup key — the same business survives a
   // rename or a number change. Partial index so the many rows with no
   // place_id (pasted/CSV leads) don't collide with each other on NULL.

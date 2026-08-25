@@ -104,6 +104,20 @@ export default async function MeetingsPage() {
               </p>
 
               {(() => {
+                const demoBooking = bookings.get(call.id);
+                if (!demoBooking || !demoBooking.landline_only) return null;
+                return (
+                  <p
+                    className="notice warn small"
+                    style={{ margin: "0 0 12px", padding: "10px 14px", fontWeight: 600 }}
+                  >
+                    📞 LANDLINE — call {call.phone ? formatAuPhone(call.phone) : "them"} directly at{" "}
+                    {formatSydney(demoBooking.meeting_at)} instead of expecting a video join.
+                  </p>
+                );
+              })()}
+
+              {(() => {
                 const demoAgent = demoAgents.get(call.id);
                 if (demoAgent?.status === "ready" && demoAgent.elevenlabs_agent_id) {
                   return (

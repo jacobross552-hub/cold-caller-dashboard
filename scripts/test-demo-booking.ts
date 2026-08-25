@@ -376,6 +376,62 @@ async function main() {
 
   global.fetch = originalFetch;
 
+  console.log("\n16. landline_only — set on a landline dial number with no working confirmation send\n");
+
+  const call11 = seedCall({
+    createdAt: now,
+    phone: "+61351760102", // a real AU landline prefix (03)
+    transcript: bookedTranscript({
+      meetingIso: new Date(meetingIn3Days).toISOString(),
+      smsSends: [
+        {
+          sid: "SM_landline_fail",
+          to: "+61351760102",
+          body: "Your demo is booked. Join: https://meet.google.com/abc-defg-hij",
+          isError: true,
+          rawError: "'To' number +61351760102 cannot be a landline",
+        },
+      ],
+    }),
+  });
+  booking.recordDemoBooking(call11);
+  equal("flagged landline_only — dialled number is a landline and the text failed", booking.getDemoBooking(call11)!.landline_only, 1);
+
+  console.log("\n17. landline_only — NOT set when a working mobile alternative got the confirmation through\n");
+
+  const call12 = seedCall({
+    createdAt: now,
+    phone: "+61351760102", // dialled on a landline...
+    transcript: bookedTranscript({
+      meetingIso: new Date(meetingIn3Days).toISOString(),
+      smsSends: [
+        // ...but they gave a mobile instead, and it went through fine.
+        { sid: "SM_alt_mobile", to: "+61490009999", body: "Your demo is booked. Join: https://meet.google.com/abc-defg-hij" },
+      ],
+    }),
+  });
+  booking.recordDemoBooking(call12);
+  equal("not flagged — the confirmation reached them another way", booking.getDemoBooking(call12)!.landline_only, 0);
+
+  console.log("\n18. landline_only — NOT set for a normal mobile dial number\n");
+
+  const call13 = seedCall({
+    createdAt: now,
+    phone: "+61490001234",
+    transcript: bookedTranscript({ meetingIso: new Date(meetingIn3Days).toISOString() }),
+  });
+  booking.recordDemoBooking(call13);
+  equal("mobile numbers are never flagged", booking.getDemoBooking(call13)!.landline_only, 0);
+
+  console.log("\n19. backfillLandlineFlags — recomputes existing bookings from real data\n");
+
+  db().exec(`UPDATE demo_bookings SET landline_only = 0 WHERE call_id = ${call11}`);
+  db().exec(`UPDATE demo_bookings SET landline_only = 1 WHERE call_id = ${call13}`);
+  const changed = booking.backfillLandlineFlags();
+  check("both mis-set rows were corrected", changed >= 2);
+  equal("call11 (real landline failure) corrected back to 1", booking.getDemoBooking(call11)!.landline_only, 1);
+  equal("call13 (real mobile) corrected back to 0", booking.getDemoBooking(call13)!.landline_only, 0);
+
   console.log(`\n${passed} passed, ${failed} failed\n`);
 
   try {

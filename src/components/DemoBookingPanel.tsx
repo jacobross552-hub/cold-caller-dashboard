@@ -5,6 +5,7 @@
  */
 
 import { formatSydney } from "@/lib/calling-hours";
+import { formatAuPhone } from "@/lib/phone";
 import {
   ATTENDANCE_LABELS,
   SMS_PURPOSE_LABELS,
@@ -56,10 +57,12 @@ export function DemoBookingPanel({
   callId,
   booking,
   smsSends,
+  phone,
 }: {
   callId: number;
   booking: DemoBookingRow | null;
   smsSends: SmsSendRow[];
+  phone: string | null;
 }) {
   if (!booking) return null;
 
@@ -76,6 +79,17 @@ export function DemoBookingPanel({
         >
           ⚠ NO-SHOW — this demo&apos;s start time passed 5+ minutes ago with nobody marked as joined. Call
           them.
+        </div>
+      )}
+
+      {Boolean(booking.landline_only) && (
+        <div
+          className="notice warn"
+          style={{ fontSize: 16, fontWeight: 700, padding: "16px 18px", marginBottom: 16 }}
+        >
+          📞 LANDLINE — they can&apos;t receive the Meet link by text. Call{" "}
+          {phone ? formatAuPhone(phone) : "them"} directly at {formatSydney(booking.meeting_at)} instead of
+          expecting them to join a video call.
         </div>
       )}
 

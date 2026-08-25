@@ -25,6 +25,7 @@ import { db, logEvent } from "./db";
 import { optional } from "./env";
 import { formatSydney } from "./calling-hours";
 import { findBookedEvent } from "./calendar-event";
+import { normaliseAuPhone } from "./phone";
 import type { TranscriptTurn } from "./outcomes";
 
 const MS_PER_MIN = 60_000;
@@ -55,6 +56,7 @@ export interface DemoBookingRow {
   attendance_notes: string | null;
   attendance_marked_at: number | null;
   no_show_flagged_at: number | null;
+  landline_only: number;
   created_at: number;
 }
 
@@ -228,6 +230,55 @@ function backfillAgentSms(callId: number, transcript: TranscriptTurn[]): void {
 }
 
 /* ---------------------------------------------------------------------------
+ * Landline detection — "call this one back manually"
+ * ------------------------------------------------------------------------ */
+
+/**
+ * True when the dialled number can't take SMS (an AU landline) AND nothing
+ * else on the call got the confirmation through either — checked against
+ * sms_sends AFTER backfillAgentSms has run, so a prospect who gave a working
+ * mobile or had the text land some other way is correctly NOT flagged, even
+ * though the number they were dialled on was a landline.
+ */
+function computeLandlineOnly(callId: number, phone: string | null): number {
+  if (!phone) return 0;
+  if (normaliseAuPhone(phone).kind !== "landline") return 0;
+
+  const sentConfirmation = db()
+    .prepare(
+      `SELECT 1 FROM sms_sends WHERE call_id = ? AND purpose = 'demo_confirmation' AND provider_sid IS NOT NULL LIMIT 1`,
+    )
+    .get(callId);
+  return sentConfirmation ? 0 : 1;
+}
+
+/**
+ * Recompute landline_only for every existing booking — for meetings booked
+ * before this flag existed, or before the live script stopped blind-texting
+ * landlines. Safe to run any number of times; only touches rows whose
+ * computed value differs from what's stored.
+ */
+export function backfillLandlineFlags(): number {
+  const rows = db()
+    .prepare(
+      `SELECT db.call_id AS call_id, db.landline_only AS landline_only, c.phone AS phone
+         FROM demo_bookings db JOIN calls c ON c.id = db.call_id`,
+    )
+    .all() as unknown as Array<{ call_id: number; landline_only: number; phone: string | null }>;
+
+  const update = db().prepare(`UPDATE demo_bookings SET landline_only = ? WHERE call_id = ?`);
+  let changed = 0;
+  for (const row of rows) {
+    const computed = computeLandlineOnly(row.call_id, row.phone);
+    if (computed !== row.landline_only) {
+      update.run(computed, row.call_id);
+      changed++;
+    }
+  }
+  return changed;
+}
+
+/* ---------------------------------------------------------------------------
  * Recording the booking
  * ------------------------------------------------------------------------ */
 
@@ -243,8 +294,8 @@ function backfillAgentSms(callId: number, transcript: TranscriptTurn[]): void {
 export function recordDemoBooking(callId: number): void {
   if (getDemoBooking(callId)) return;
 
-  const call = db().prepare("SELECT transcript_json, created_at FROM calls WHERE id = ?").get(callId) as
-    | { transcript_json: string | null; created_at: number }
+  const call = db().prepare("SELECT transcript_json, created_at, phone FROM calls WHERE id = ?").get(callId) as
+    | { transcript_json: string | null; created_at: number; phone: string | null }
     | undefined;
   if (!call) return;
 
@@ -274,18 +325,21 @@ export function recordDemoBooking(callId: number): void {
   const skip24h = leadTime < REMINDER_24H_MS ? 1 : 0;
   const skip1h = leadTime < REMINDER_1H_MS ? 1 : 0;
 
+  // Backfill first — landline detection below needs sms_sends populated to
+  // know whether the confirmation actually got through some other way.
+  backfillAgentSms(callId, transcript);
+  const landlineOnly = computeLandlineOnly(callId, call.phone);
+
   db()
     .prepare(
-      `INSERT INTO demo_bookings (call_id, meeting_at, meet_link, reminder_24h_skipped, reminder_1h_skipped, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO demo_bookings (call_id, meeting_at, meet_link, reminder_24h_skipped, reminder_1h_skipped, landline_only, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(callId, meetingAt, event.meetLink ?? null, skip24h, skip1h, Date.now());
-
-  backfillAgentSms(callId, transcript);
+    .run(callId, meetingAt, event.meetLink ?? null, skip24h, skip1h, landlineOnly, Date.now());
 
   logEvent(
     "demo_booking.recorded",
-    `Demo booking recorded for call ${callId}: ${formatSydney(meetingAt)}${skip24h ? " (24h reminder skipped — booked too close to the demo)" : ""}${skip1h ? " (1h reminder skipped too)" : ""}.`,
+    `Demo booking recorded for call ${callId}: ${formatSydney(meetingAt)}${skip24h ? " (24h reminder skipped — booked too close to the demo)" : ""}${skip1h ? " (1h reminder skipped too)" : ""}${landlineOnly ? " — LANDLINE, call them directly instead of expecting a video join" : ""}.`,
     { callId },
   );
 }

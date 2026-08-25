@@ -82,7 +82,12 @@ export default async function CallDetailPage({ params }: { params: Promise<{ id:
       )}
 
       {call.booked === 1 && (
-        <DemoBookingPanel callId={call.id} booking={getDemoBooking(call.id)} smsSends={listSmsForCall(call.id)} />
+        <DemoBookingPanel
+          callId={call.id}
+          booking={getDemoBooking(call.id)}
+          smsSends={listSmsForCall(call.id)}
+          phone={call.phone}
+        />
       )}
 
       {call.booked === 1 && (
